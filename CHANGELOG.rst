@@ -2,11 +2,117 @@
 CHANGELOG
 *********
 
+`v1.10.0`_ (2022-03-07)
+======================
+* Add 'nonlocal' option to *defuse* argument of `XMLResource` (also for schema classes)
+* Add 'none' option to *allow* argument of `XMLResource`
+* Fix too strict parsing on XSD annotations (issue #287)
+* Drop support for Python 3.6
+
+`v1.9.2`_ (2021-12-23)
+======================
+* Fix for global simple type naming (issue #278)
+
+`v1.9.1`_ (2021-12-08)
+======================
+* Improve error reporting for encoded data (issue #275)
+* Fix attribute duplicates in attribute group (issue #276)
+* Add process_skipped optional argument to decoding/encoding
+
+`v1.9.0`_ (2021-11-30)
+======================
+* Add iter_decode() to document level API
+* Enhance XMLResource class adding usage of pathlib.Path objects
+  for source and base_url arguments
+* Fix for issue #273
+
+`v1.8.2`_ (2021-11-11)
+======================
+* Fix for issues #266 and #268
+* Fix type annotation of XMLSchema source argument (issue #230)
+
+`v1.8.1`_ (2021-10-20)
+======================
+* Near compliance with strict type annotations
+* Removed ModelGroup class, merged with XsdGroup
+* Some optimizations and fixes from static analysis
+
+`v1.8.0`_ (2021-09-27)
+======================
+* Refactor XMLSchemaMeta deprecating BUILDER attribute
+* Extend type annotations to package API
+* Add static typing tests with checked mypy runs
+
+`v1.7.1`_ (2021-09-03)
+======================
+* Activate mypy checks for package
+* Fix for issues #257 and #259
+
+`v1.7.0`_ (2021-08-02)
+======================
+* Make XSD annotation parsing lazy
+* Add lazy annotations to schema instances
+* Add get_annotation() method to multiple-facets classes (issue #255)
+
+`v1.6.4`_ (2021-06-09)
+======================
+* Add testing config for Python 3.10 (Tox and CI)
+* Fix internal _PurePath class with Python 3.10 (issue #251)
+* Remove redundant xmlns="" declaration when encoding with lxml (issue #252)
+
+`v1.6.3`_ (2021-06-07)
+======================
+* Refactor normalize_url() using pathlib.PurePath
+* Support UNC paths (issue #246)
+* Fix API docs (issue #248)
+
+`v1.6.2`_ (2021-05-03)
+======================
+* Fix for issue #245 (key/keyref with dynamic types)
+* Change default decoding of mixed content with only text to a string
+  instead of a dictionary (issue #242)
+
+`v1.6.1`_ (2021-04-11)
+======================
+* Add multi-source initialization and add_schema() to schema class
+* Add bytes strings to accepted XML sources (issue #238)
+
+`v1.6.0`_ (2021-04-06)
+======================
+* XML data bindings and code generators are now considered stable
+* Add arguments 'max_depth' and 'extra_validator' to validation methods
+* Enhance decoding with 'value_hook' argument
+
+`v1.5.3`_ (2021-03-14)
+======================
+* Remove unnecessary bindings with schema proxy from ElementPathMixin
+  to avoid conflicts when schema is used by an XPath 3 parser
+* Fix schema logger (issue #228)
+
+`v1.5.2`_ (2021-03-04)
+======================
+* Improve empty content checking
+* Fix simple content restriction of xs:complexType
+* Fix facets retrieving for xs:complexType with simple content
+
+`v1.5.1`_ (2021-02-11)
+======================
+* Optimize NamespaceView read-only mapping
+* Add experimental XML data bindings with a DataBindingConverter
+* Add experimental PythonGenerator for static codegen with Jinja2
+
+`v1.5.0`_ (2021-02-05)
+======================
+* Add DataElement class for creating objects with schema bindings
+* Add DataElementConverter for decode to structured objects
+* Add an experimental abstract base class for building jinja2 based
+  code generators (jinja2 as an optional dependency)
+
 `v1.4.2`_ (2021-01-24)
 ======================
 * Add decoding of binary datatypes (xs:hexBinary and xs:base64Binary)
 * Fix encoding from string values for some builtin datatypes
-  (decimal, binary, duration and datetime).
+  (decimal, binary, duration and datetime)
 
 `v1.4.1`_ (2020-12-24)
 ======================
@@ -394,3 +500,21 @@ v0.9.6 (2017-05-05)
 .. _v1.4.0: https://github.com/brunato/xmlschema/compare/v1.3.1...v1.4.0
 .. _v1.4.1: https://github.com/brunato/xmlschema/compare/v1.4.0...v1.4.1
 .. _v1.4.2: https://github.com/brunato/xmlschema/compare/v1.4.1...v1.4.2
+.. _v1.5.0: https://github.com/brunato/xmlschema/compare/v1.4.2...v1.5.0
+.. _v1.5.1: https://github.com/brunato/xmlschema/compare/v1.5.0...v1.5.1
+.. _v1.5.2: https://github.com/brunato/xmlschema/compare/v1.5.1...v1.5.2
+.. _v1.5.3: https://github.com/brunato/xmlschema/compare/v1.5.2...v1.5.3
+.. _v1.6.0: https://github.com/brunato/xmlschema/compare/v1.5.3...v1.6.0
+.. _v1.6.1: https://github.com/brunato/xmlschema/compare/v1.6.0...v1.6.1
+.. _v1.6.2: https://github.com/brunato/xmlschema/compare/v1.6.1...v1.6.2
+.. _v1.6.3: https://github.com/brunato/xmlschema/compare/v1.6.2...v1.6.3
+.. _v1.6.4: https://github.com/brunato/xmlschema/compare/v1.6.3...v1.6.4
+.. _v1.7.0: https://github.com/brunato/xmlschema/compare/v1.6.4...v1.7.0
+.. _v1.7.1: https://github.com/brunato/xmlschema/compare/v1.7.0...v1.7.1
+.. _v1.8.0: https://github.com/brunato/xmlschema/compare/v1.7.1...v1.8.0
+.. _v1.8.1: https://github.com/brunato/xmlschema/compare/v1.8.0...v1.8.1
+.. _v1.8.2: https://github.com/brunato/xmlschema/compare/v1.8.1...v1.8.2
+.. _v1.9.0: https://github.com/brunato/xmlschema/compare/v1.8.2...v1.9.0
+.. _v1.9.1: https://github.com/brunato/xmlschema/compare/v1.9.0...v1.9.1
+.. _v1.9.2: https://github.com/brunato/xmlschema/compare/v1.9.1...v1.9.2
+.. _v1.10.0: https://github.com/brunato/xmlschema/compare/v1.9.2...v1.10.0

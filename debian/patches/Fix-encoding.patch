@@ -1,0 +1,40 @@
+enforced encoding="utf-8" for calls of fileinput.input, since it
+may be necessary during the package build in some environments
+Index: python-xmlschema/tests/test_package.py
+===================================================================
+--- python-xmlschema.orig/tests/test_package.py
++++ python-xmlschema/tests/test_package.py
+@@ -42,7 +42,7 @@ class TestPackaging(unittest.TestCase):
+         file_excluded = []
+         files = glob.glob(os.path.join(self.source_dir, '*.py')) + \
+             glob.glob(os.path.join(self.source_dir, 'validators/*.py'))
+-        for line in fileinput.input(files):
++        for line in fileinput.input(files, encoding="utf-8"):
+             if fileinput.isfirstline():
+                 filename = fileinput.filename()
+                 file_excluded = exclude.get(os.path.basename(filename), [])
+@@ -66,7 +66,7 @@ class TestPackaging(unittest.TestCase):
+                 os.path.join(self.package_dir, 'doc/conf.py'),
+             ])
+         version = filename = None
+-        for line in fileinput.input(files):
++        for line in fileinput.input(files, encoding="utf-8"):
+             if fileinput.isfirstline():
+                 filename = fileinput.filename()
+             lineno = fileinput.filelineno()
+@@ -84,13 +84,13 @@ class TestPackaging(unittest.TestCase):
+     def test_elementpath_requirement(self):
+         package_dir = pathlib.Path(__file__).parent.parent
+         ep_requirement = None
+-        for line in fileinput.input(str(package_dir.joinpath('requirements-dev.txt'))):
++        for line in fileinput.input(str(package_dir.joinpath('requirements-dev.txt')), encoding="utf-8"):
+             if 'elementpath' in line:
+                 ep_requirement = line.strip()
+ 
+         self.assertIsNotNone(ep_requirement, msg="Missing elementpath in requirements-dev.txt")
+ 
+-        for line in fileinput.input(str(package_dir.joinpath('setup.py'))):
++        for line in fileinput.input(str(package_dir.joinpath('setup.py')), encoding="utf-8"):
+             if 'elementpath' in line:
+                 self.assertIn(ep_requirement, line, msg="Unmatched requirement in setup.py")
+ 

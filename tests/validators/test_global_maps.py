@@ -11,9 +11,10 @@
 import unittest
 
 from xmlschema import XMLSchema10, XMLSchema11
+from xmlschema.names import XSD_ELEMENT, XSD_STRING, XSD_SIMPLE_TYPE
 
 
-class TestMetaSchemaMaps(unittest.TestCase):
+class TestXsdGlobalsMaps(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
@@ -24,6 +25,41 @@ class TestMetaSchemaMaps(unittest.TestCase):
     def tearDownClass(cls):
         XMLSchema10.meta_schema.clear()
         XMLSchema11.meta_schema.clear()
+
+    def test_maps_repr(self):
+        self.assertEqual(
+            repr(XMLSchema10.meta_schema.maps),
+            "XsdGlobals(validator=MetaXMLSchema10(name='XMLSchema.xsd', "
+            "namespace='http://www.w3.org/2001/XMLSchema'), validation='strict')"
+        )
+
+    def test_lookup(self):
+        with self.assertRaises(KeyError):
+            XMLSchema10.meta_schema.maps.lookup(XSD_ELEMENT, 'wrong')
+
+        xs_string = XMLSchema10.meta_schema.maps.lookup(XSD_SIMPLE_TYPE, XSD_STRING)
+        self.assertEqual(xs_string.name, XSD_STRING)
+
+        with self.assertRaises(ValueError):
+            XMLSchema10.meta_schema.maps.lookup('simpleType', XSD_STRING)
+
+    def test_clear(self):
+        maps = XMLSchema10.meta_schema.maps.copy()
+
+        self.assertEqual(len(list(maps.iter_globals())), 158)
+
+        maps.clear(only_unbuilt=True)
+        self.assertEqual(len(list(maps.iter_globals())), 158)
+
+        maps.clear()
+        self.assertEqual(len(list(maps.iter_globals())), 0)
+        maps.build()
+        self.assertEqual(len(list(maps.iter_globals())), 158)
+
+        maps.clear(remove_schemas=True)
+        self.assertEqual(len(list(maps.iter_globals())), 0)
+        with self.assertRaises(ValueError):
+            maps.build()  # missing XSD meta-schema
 
     def test_xsd_10_globals(self):
         self.assertEqual(len(XMLSchema10.meta_schema.maps.notations), 2)
@@ -72,7 +108,7 @@ class TestMetaSchemaMaps(unittest.TestCase):
                 if c.is_global():
                     global_counter += 1
         self.assertEqual(global_counter, 158)
-        self.assertEqual(total_counter, 782)
+        self.assertEqual(total_counter, 808)
 
     def test_xsd_11_components(self):
         total_counter = 0
@@ -83,7 +119,7 @@ class TestMetaSchemaMaps(unittest.TestCase):
                 if c.is_global():
                     global_counter += 1
         self.assertEqual(global_counter, 183)
-        self.assertEqual(total_counter, 932)
+        self.assertEqual(total_counter, 972)
 
     def test_xsd_11_restrictions(self):
         all_model_type = XMLSchema11.meta_schema.types['all']

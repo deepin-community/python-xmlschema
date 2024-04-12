@@ -37,6 +37,7 @@ Document level API
 .. autofunction:: xmlschema.validate
 .. autofunction:: xmlschema.is_valid
 .. autofunction:: xmlschema.iter_errors
+.. autofunction:: xmlschema.iter_decode
 .. autofunction:: xmlschema.to_dict
 .. autofunction:: xmlschema.to_json
 .. autofunction:: xmlschema.from_json
@@ -59,7 +60,9 @@ Schema level API
 
     .. autoattribute:: root
     .. automethod:: get_text
+    .. autoattribute:: name
     .. autoattribute:: url
+    .. autoattribute:: base_url
 
     .. autoattribute:: tag
     .. autoattribute:: id
@@ -69,7 +72,6 @@ Schema level API
     .. autoattribute:: no_namespace_schema_location
     .. autoattribute:: target_prefix
     .. autoattribute:: default_namespace
-    .. autoattribute:: base_url
     .. autoattribute:: root_elements
     .. autoattribute:: simple_types
     .. autoattribute:: complex_types
@@ -132,7 +134,7 @@ The base class `XMLSchemaConverter` is used for defining generic converters.
 The subclasses implement some of the most used `conventions for converting XML
 to JSON data <http://wiki.open311.org/JSON_and_XML_Conversion/>`_.
 
-.. autoclass:: xmlschema.converters.ElementData
+.. autoclass:: xmlschema.ElementData
 
 .. autoclass:: xmlschema.XMLSchemaConverter
 
@@ -162,6 +164,16 @@ to JSON data <http://wiki.open311.org/JSON_and_XML_Conversion/>`_.
 .. autoclass:: xmlschema.ColumnarConverter
 
 
+.. _data-objects-api:
+
+Data objects API
+================
+
+.. autoclass:: xmlschema.DataElement
+.. autoclass:: xmlschema.DataElementConverter
+.. autoclass:: xmlschema.DataBindingConverter
+
+
 .. _xml-resource-api:
 
 XML resources API
@@ -176,8 +188,10 @@ XML resources API
 
     .. autoattribute:: root
     .. autoattribute:: text
+    .. autoattribute:: name
     .. autoattribute:: url
     .. autoattribute:: base_url
+    .. autoattribute:: filepath
     .. autoattribute:: namespace
 
     .. automethod:: parse
@@ -199,15 +213,6 @@ XML resources API
     .. automethod:: get_locations
 
 .. autoclass:: xmlschema.XmlDocument
-
-.. autoclass:: xmlschema.wsdl.Wsdl11Document
-
-    .. autoattribute:: messages
-    .. autoattribute:: port_types
-    .. autoattribute:: bindings
-    .. autoattribute:: services
-
-
 
 
 .. _xpath-api:
@@ -312,7 +317,7 @@ Types
 .. autoclass:: xmlschema.validators.Xsd11ComplexType
 .. autoclass:: xmlschema.validators.XsdComplexType
 
-    .. autoattribute:: content_type
+    .. autoattribute:: content
 
 .. autoclass:: xmlschema.validators.XsdSimpleType
 
@@ -383,3 +388,36 @@ Others
 .. autoclass:: xmlschema.validators.XsdAlternative
 .. autoclass:: xmlschema.validators.XsdNotation
 .. autoclass:: xmlschema.validators.XsdAnnotation
+
+
+.. _extra-api:
+
+Extra features API
+==================
+
+Code generators
+---------------
+
+.. autoclass:: xmlschema.extras.codegen.AbstractGenerator
+
+    .. automethod:: map_type
+    .. automethod:: list_templates
+    .. automethod:: matching_templates
+    .. automethod:: get_template
+    .. automethod:: select_template
+    .. automethod:: render
+    .. automethod:: render_to_files
+
+
+.. autoclass:: xmlschema.extras.codegen.PythonGenerator
+
+
+WSDL 1.1 documents
+------------------
+
+.. autoclass:: xmlschema.extras.wsdl.Wsdl11Document
+
+    .. autoattribute:: messages
+    .. autoattribute:: port_types
+    .. autoattribute:: bindings
+    .. autoattribute:: services

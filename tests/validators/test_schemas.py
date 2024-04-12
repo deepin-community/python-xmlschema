@@ -13,6 +13,7 @@ import logging
 import tempfile
 import warnings
 import pathlib
+import pickle
 import platform
 import glob
 import os
@@ -22,14 +23,22 @@ from textwrap import dedent
 from xmlschema import XMLSchemaParseError, XMLSchemaIncludeWarning, XMLSchemaImportWarning
 from xmlschema.names import XML_NAMESPACE, LOCATION_HINTS, SCHEMAS_DIR, XSD_ELEMENT, XSI_TYPE
 from xmlschema.etree import etree_element
-from xmlschema.validators import XMLSchemaBase, XMLSchema11, XsdGlobals
+from xmlschema.validators import XMLSchemaBase, XMLSchema10, XMLSchema11, \
+    XsdGlobals, Xsd11Attribute
 from xmlschema.testing import SKIP_REMOTE_TESTS, XsdValidatorTestCase
-from xmlschema.validators.schema import logger, XMLSchemaNotBuiltError
+from xmlschema.validators.schemas import logger
+
+
+class CustomXMLSchema(XMLSchema10):
+    pass
 
 
 class TestXMLSchema10(XsdValidatorTestCase):
     TEST_CASES_DIR = os.path.join(os.path.dirname(__file__), '../test_cases')
     maxDiff = None
+
+    class CustomXMLSchema(XMLSchema10):
+        pass
 
     def test_schema_validation(self):
         schema = self.schema_class(self.vh_xsd_file)
@@ -99,7 +108,7 @@ class TestXMLSchema10(XsdValidatorTestCase):
     def test_builtin_types(self):
         self.assertIn('string', self.schema_class.builtin_types())
 
-        with self.assertRaises(XMLSchemaNotBuiltError):
+        with self.assertRaises(RuntimeError):
             self.schema_class.meta_schema.builtin_types()
 
     def test_resolve_qname(self):
@@ -163,7 +172,19 @@ class TestXMLSchema10(XsdValidatorTestCase):
             <xs:element name='foo'>
                 <xs:annotation />
             </xs:element>""")
-        self.assertIsNotNone(schema.elements['foo'].annotation)
+        xsd_element = schema.elements['foo']
+        self.assertIsNone(xsd_element._annotation)  # lazy annotation
+        self.assertIsNotNone(xsd_element.annotation)
+        self.assertIs(xsd_element.annotation, xsd_element._annotation)
+
+        self.check_schema("""
+        <xs:simpleType name='Magic'>
+            <xs:annotation />
+            <xs:annotation />
+            <xs:restriction base='xs:string'>
+                <xs:enumeration value='A'/>
+            </xs:restriction>
+        </xs:simpleType>""", XMLSchemaParseError)
 
         schema = self.check_schema("""
         <xs:simpleType name='Magic'>
@@ -174,16 +195,67 @@ class TestXMLSchema10(XsdValidatorTestCase):
                 <xs:enumeration value='A'/>
             </xs:restriction>
         </xs:simpleType>""")
-        self.assertIsNotNone(schema.types["Magic"].annotation)
 
-        self.check_schema("""
-        <xs:simpleType name='Magic'>
-            <xs:annotation />
-            <xs:annotation />
-            <xs:restriction base='xs:string'>
-                <xs:enumeration value='A'/>
-            </xs:restriction>
-        </xs:simpleType>""", XMLSchemaParseError)
+        xsd_type = schema.types["Magic"]
+        self.assertIsNotNone(xsd_type._annotation)  # xs:simpleType annotations are not lazy parsed
+        self.assertEqual(str(xsd_type.annotation), ' stuff ')
+
+    def test_annotation_string(self):
+        schema = self.check_schema("""
+            <xs:element name='A'>
+                <xs:annotation>
+                    <xs:documentation>A element info</xs:documentation>
+                </xs:annotation>
+            </xs:element>
+            <xs:element name='B'>
+                <xs:annotation>
+                    <xs:documentation>B element extended info, line1</xs:documentation>
+                    <xs:documentation>B element extended info, line2</xs:documentation>
+                </xs:annotation>
+            </xs:element>""")
+
+        xsd_element = schema.elements['A']
+        self.assertEqual(str(xsd_element.annotation), 'A element info')
+        self.assertEqual(repr(xsd_element.annotation), "XsdAnnotation('A element info')")
+
+        xsd_element = schema.elements['B']
+        self.assertEqual(str(xsd_element.annotation),
+                         'B element extended info, line1\nB element extended info, line2')
+        self.assertEqual(repr(xsd_element.annotation),
+                         "XsdAnnotation('B element extended info, line1\\nB element')")
+
+    def test_schema_annotations(self):
+        schema = self.schema_class(dedent("""\
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                <xs:element name="root"/>
+            </xs:schema>"""))
+
+        self.assertIsNone(schema._annotations)
+        annotations = schema.annotations
+        self.assertListEqual(annotations, [])
+        self.assertIs(annotations, schema.annotations)
+
+        schema = self.schema_class(dedent("""\
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                <xs:annotation>
+                    <xs:documentation>First annotation</xs:documentation>
+                </xs:annotation>
+                <xs:annotation>
+                    <xs:documentation>Second annotation</xs:documentation>
+                </xs:annotation>
+                <xs:element name="root"/>
+                <xs:annotation>
+                    <xs:documentation>Third annotation</xs:documentation>
+                </xs:annotation>
+            </xs:schema>"""))
+
+        self.assertIsNone(schema._annotations)
+        annotations = schema.annotations
+        self.assertEqual(len(annotations), 3)
+        self.assertEqual(repr(annotations[0]), "XsdAnnotation('First annotation')")
+        self.assertEqual(repr(annotations[1]), "XsdAnnotation('Second annotation')")
+        self.assertEqual(repr(annotations[2]), "XsdAnnotation('Third annotation')")
+        self.assertIs(annotations, schema.annotations)
 
     def test_base_schemas(self):
         xsd_file = os.path.join(SCHEMAS_DIR, 'XML/xml_minimal.xsd')
@@ -216,6 +288,14 @@ class TestXMLSchema10(XsdValidatorTestCase):
 
         self.assertEqual(set(schema.root_elements),
                          {schema.elements['root1'], schema.elements['root2']})
+
+    def test_simple_types(self):
+        self.assertListEqual(self.vh_schema.simple_types, [])
+        self.assertGreater(len(self.st_schema.simple_types), 20)
+
+    def test_complex_types(self):
+        self.assertListEqual(self.vh_schema.complex_types,
+                             [self.vh_schema.types['vehicleType']])
 
     def test_is_restriction_method(self):
         # Test issue #111 fix
@@ -478,6 +558,101 @@ class TestXMLSchema10(XsdValidatorTestCase):
         elements.reverse()
         self.assertListEqual(elements, list(reversed(schema)))
 
+    def test_multi_schema_initialization(self):
+        source1 = dedent("""\
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                <xs:element name="elem1"/>
+            </xs:schema>""")
+
+        source2 = dedent("""\
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                <xs:element name="elem2"/>
+            </xs:schema>""")
+
+        source3 = dedent("""\
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                <xs:element name="elem3"/>
+            </xs:schema>""")
+
+        schema = self.schema_class([source1, source2, source3])
+        self.assertEqual(len(schema.elements), 3)
+        self.assertEqual(len(schema.maps.namespaces['']), 3)
+        self.assertIs(schema.elements['elem1'].schema, schema)
+        self.assertIs(schema.elements['elem2'].schema, schema.maps.namespaces[''][1])
+        self.assertIs(schema.elements['elem3'].schema, schema.maps.namespaces[''][2])
+
+        with self.assertRaises(XMLSchemaParseError) as ec:
+            self.schema_class([source1, source2, source2])
+        self.assertIn("global element with name='elem2' is already defined", str(ec.exception))
+
+        source1 = dedent("""\
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+                    targetNamespace="http://xmlschema.test/ns">
+                <xs:element name="elem1"/>
+            </xs:schema>""")
+
+        schema = self.schema_class([source1, source2])
+        self.assertEqual(len(schema.elements), 2)
+        self.assertEqual(len(schema.maps.namespaces['http://xmlschema.test/ns']), 2)
+        self.assertIs(schema.elements['elem1'].schema, schema)
+        self.assertIs(schema.elements['elem2'].schema,
+                      schema.maps.namespaces['http://xmlschema.test/ns'][1])
+
+    def test_add_schema(self):
+        source1 = dedent("""\
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+                    targetNamespace="http://xmlschema.test/ns">
+                <xs:element name="elem1"/>
+            </xs:schema>""")
+
+        source2 = dedent("""\
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                <xs:element name="elem2"/>
+            </xs:schema>""")
+
+        source3 = dedent("""\
+             <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+                     targetNamespace="http://xmlschema.test/ns1">
+                 <xs:element name="elem3"/>
+             </xs:schema>""")
+
+        schema = self.schema_class(source1)
+        schema.add_schema(source2, build=True)
+        self.assertEqual(len(schema.elements), 1)
+        self.assertEqual(len(schema.maps.namespaces['http://xmlschema.test/ns']), 1)
+        self.assertEqual(len(schema.maps.namespaces['']), 1)
+
+        # Less checks on duplicate objects for schemas added after the build
+        schema.add_schema(source2, build=True)
+        self.assertEqual(len(schema.maps.namespaces['']), 2)
+        self.assertTrue(schema.maps.built)
+
+        with self.assertRaises(XMLSchemaParseError) as ec:
+            schema.maps.clear()
+            schema.build()
+        self.assertIn("global element with name='elem2' is already defined", str(ec.exception))
+
+        schema = self.schema_class(source1)
+        schema.add_schema(source2, namespace='http://xmlschema.test/ns', build=True)
+        self.assertEqual(len(schema.maps.namespaces['http://xmlschema.test/ns']), 2)
+
+        # Need a rebuild to add elem2 from added schema ...
+        self.assertEqual(len(schema.elements), 1)
+        schema.maps.clear()
+        schema.build()
+        self.assertEqual(len(schema.elements), 2)
+
+        # ... so is better to build after sources additions
+        schema = self.schema_class(source1, build=False)
+        schema.add_schema(source2, namespace='http://xmlschema.test/ns')
+        schema.build()
+        self.assertEqual(len(schema.elements), 2)
+
+        # Adding other namespaces do not require rebuild
+        schema3 = schema.add_schema(source3, build=True)
+        self.assertEqual(len(schema.maps.namespaces['http://xmlschema.test/ns1']), 1)
+        self.assertEqual(len(schema3.elements), 1)
+
     def test_export_errors__issue_187(self):
         with self.assertRaises(ValueError) as ctx:
             self.vh_schema.export(target=self.vh_dir)
@@ -583,7 +758,7 @@ class TestXMLSchema10(XsdValidatorTestCase):
         self.assertFalse(os.path.isdir(dirname))
 
         with tempfile.TemporaryDirectory() as dirname:
-            vh_schema.export(target=dirname, only_relative=False)
+            vh_schema.export(target=dirname, save_remote=True)
             path = pathlib.Path(dirname).joinpath('brunato/xmlschema/master/tests/test_cases/'
                                                   'examples/vehicles/*.xsd')
 
@@ -614,10 +789,66 @@ class TestXMLSchema10(XsdValidatorTestCase):
 
         self.assertFalse(os.path.isdir(dirname))
 
+    def test_pickling_subclassed_schema__issue_263(self):
+        cases_dir = pathlib.Path(__file__).parent.parent
+        schema_file = cases_dir.joinpath('test_cases/examples/vehicles/vehicles.xsd')
+        xml_file = cases_dir.joinpath('test_cases/examples/vehicles/vehicles.xml')
+
+        schema = self.CustomXMLSchema(str(schema_file))
+        self.assertTrue(schema.is_valid(str(xml_file)))
+
+        self.assertIs(self.schema_class.meta_schema, schema.meta_schema)
+        self.assertNotIn(schema.meta_schema.__class__.__name__, globals())
+
+        s = pickle.dumps(schema)
+        _schema = pickle.loads(s)
+        self.assertTrue(_schema.is_valid(str(xml_file)))
+
+        class CustomLocalXMLSchema(self.schema_class):
+            pass
+
+        schema = CustomLocalXMLSchema(str(schema_file))
+        self.assertTrue(schema.is_valid(str(xml_file)))
+
+        with self.assertRaises((pickle.PicklingError, AttributeError)) as ec:
+            pickle.dumps(schema)
+        self.assertIn("Can't pickle", str(ec.exception))
+
+    def test_old_subclassing_attribute(self):
+
+        with warnings.catch_warnings(record=True) as ctx:
+            warnings.simplefilter("always")
+
+            class OldXMLSchema10(XMLSchema10):
+                BUILDERS = {
+                    'attribute_class': Xsd11Attribute,
+                }
+
+            self.assertEqual(len(ctx), 1, "Expected one import warning")
+            self.assertIn("'BUILDERS' will be removed in v2.0", str(ctx[0].message))
+
+        self.assertIs(OldXMLSchema10.xsd_attribute_class, Xsd11Attribute)
+
+        name = OldXMLSchema10.meta_schema.__class__.__name__
+        self.assertEqual(name, 'MetaXMLSchema10')
+        self.assertNotIn(name, globals())
+
+    def test_default_namespace_mapping__issue_266(self):
+        schema_file = self.casepath('issues/issue_266/issue_266b-1.xsd')
+        with self.assertRaises(XMLSchemaParseError) as ec:
+            self.schema_class(schema_file)
+
+        error_message = str(ec.exception)
+        self.assertIn("the QName 'testAttribute3' is mapped to no namespace", error_message)
+        self.assertIn("requires that there is an xs:import statement", error_message)
+
 
 class TestXMLSchema11(TestXMLSchema10):
 
     schema_class = XMLSchema11
+
+    class CustomXMLSchema(XMLSchema11):
+        pass
 
     def test_default_attributes(self):
         schema = self.schema_class(dedent("""\
@@ -659,29 +890,6 @@ class TestXMLSchemaMeta(unittest.TestCase):
 
         self.assertEqual(str(ctx.exception), "XSD_VERSION must be '1.0' or '1.1'")
 
-    def test_missing_builders(self):
-        with self.assertRaises(ValueError) as ctx:
-            class XMLSchema12(XMLSchemaBase):
-                XSD_VERSION = '1.1'
-                meta_schema = os.path.join(SCHEMAS_DIR, 'XSD_1.1/XMLSchema.xsd')
-
-            assert issubclass(XMLSchema12, XMLSchemaBase)
-
-        self.assertEqual(str(ctx.exception),
-                         "validator class doesn't have defined XSD builders")
-
-    def test_missing_builder_map(self):
-        with self.assertRaises(ValueError) as ctx:
-            class XMLSchema12(XMLSchemaBase):
-                XSD_VERSION = '1.1'
-                meta_schema = os.path.join(SCHEMAS_DIR, 'XSD_1.1/XMLSchema.xsd')
-                BUILDERS = XMLSchema11.BUILDERS
-
-            assert issubclass(XMLSchema12, XMLSchemaBase)
-
-        self.assertEqual(str(ctx.exception),
-                         "validator class doesn't have a builder map for XSD globals")
-
     def test_from_schema_class(self):
         class XMLSchema11Bis(XMLSchema11):
             pass
@@ -689,28 +897,54 @@ class TestXMLSchemaMeta(unittest.TestCase):
         self.assertTrue(issubclass(XMLSchema11Bis, XMLSchemaBase))
 
     def test_dummy_validator_class(self):
+
         class DummySchema(XMLSchemaBase):
             XSD_VERSION = '1.1'
             meta_schema = os.path.join(SCHEMAS_DIR, 'XSD_1.1/XMLSchema.xsd')
-            BUILDERS = {
-                'notation_class': None,
-                'complex_type_class': None,
-                'attribute_class': None,
-                'any_attribute_class': None,
-                'attribute_group_class': None,
-                'group_class': None,
-                'element_class': None,
-                'any_element_class': None,
-                'restriction_class': None,
-                'union_class': None,
-                'key_class': None,
-                'keyref_class': None,
-                'unique_class': None,
-                'simple_type_factory': None,
-            }
-            BASE_SCHEMAS = {}
 
         self.assertTrue(issubclass(DummySchema, XMLSchemaBase))
+
+    def test_subclass_but_no_replace_meta_schema(self):
+
+        class CustomXMLSchema10(XMLSchema10):
+            pass
+
+        self.assertIsInstance(CustomXMLSchema10.meta_schema, XMLSchemaBase)
+        self.assertIs(CustomXMLSchema10.meta_schema, XMLSchema10.meta_schema)
+
+        name = CustomXMLSchema10.meta_schema.__class__.__name__
+        self.assertEqual(name, 'MetaXMLSchema10')
+        self.assertNotIn(name, globals())
+
+    def test_subclass_and_replace_meta_schema(self):
+
+        class CustomXMLSchema10(XMLSchema10):
+            meta_schema = os.path.join(SCHEMAS_DIR, 'XSD_1.0/XMLSchema.xsd')
+
+        self.assertIsInstance(CustomXMLSchema10.meta_schema, XMLSchemaBase)
+        self.assertIsNot(CustomXMLSchema10.meta_schema, XMLSchema10.meta_schema)
+
+        name = CustomXMLSchema10.meta_schema.__class__.__name__
+        self.assertEqual(name, 'MetaCustomXMLSchema10')
+        self.assertIn(name, globals())
+
+        bases = CustomXMLSchema10.meta_schema.__class__.__bases__
+        self.assertEqual(bases, (XMLSchema10.meta_schema.__class__,))
+
+    def test_subclass_and_create_base_meta_schema(self):
+
+        class CustomXMLSchema10(XMLSchemaBase):
+            meta_schema = os.path.join(SCHEMAS_DIR, 'XSD_1.0/XMLSchema.xsd')
+
+        self.assertIsInstance(CustomXMLSchema10.meta_schema, XMLSchemaBase)
+        self.assertIsNot(CustomXMLSchema10.meta_schema, XMLSchema10.meta_schema)
+
+        name = CustomXMLSchema10.meta_schema.__class__.__name__
+        self.assertEqual(name, 'MetaCustomXMLSchema10')
+        self.assertIn(name, globals())
+
+        bases = CustomXMLSchema10.meta_schema.__class__.__bases__
+        self.assertEqual(bases, (XMLSchemaBase,))
 
 
 if __name__ == '__main__':

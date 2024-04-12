@@ -7,12 +7,12 @@ include /usr/share/dpkg/pkg-info.mk
 # Copy/generate three artifacts needed by the test suite
 export PYBUILD_NAME=xmlschema
 define PYBUILD_BEFORE_TEST
-  cp setup.py {build_dir}/
+  cp mypy.ini requirements-dev.txt setup.py {build_dir}/
   mkdir {build_dir}/doc
   cp doc/conf.py {build_dir}/doc/
 endef
 export PYBUILD_BEFORE_TEST
-export PYBUILD_AFTER_TEST=rm -f {build_dir}/setup.py {build_dir}/doc/conf.py
+export PYBUILD_AFTER_TEST=rm -f {build_dir}/setup.py {build_dir}/mypy.ini {build_dir}/requirements-dev.txt {build_dir}/doc/conf.py
 
 
 %:
@@ -46,11 +46,9 @@ override_dh_installdocs:
 	dh_installdocs --package=python-xmlschema-doc --doc-main-package=python3-xmlschema
 	dh_installdocs --remaining-packages
 
-override_dh_missing:
-	dh_missing --fail-missing
-
 override_dh_auto_clean:
 	dh_auto_clean
 	rm -rf doc/_build
 	rm -f unicode_categories.json xmlschema/unicode_categories.json
 	rm -f *.1
+

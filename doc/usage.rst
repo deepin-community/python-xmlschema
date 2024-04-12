@@ -79,6 +79,51 @@ reference directory path for other includes and imports:
     >>> schema = xmlschema.XMLSchema(schema_file, base_url='tests/test_cases/examples/vehicles/')
 
 
+Non standard options for schema instance creation
+-------------------------------------------------
+
+Other options for schema instance creation are available using non-standard
+methods. Most cases require to use the *build* option to delay the schema
+build after the loading of all schema resources. For example:
+
+.. doctest::
+
+    >>> schema_file = open('tests/test_cases/examples/vehicles/vehicles.xsd')
+    >>> schema = xmlschema.XMLSchema(schema_file, build=False)
+    >>> _ = schema.include_schema('tests/test_cases/examples/vehicles/cars.xsd')
+    >>> _ = schema.include_schema('tests/test_cases/examples/vehicles/bikes.xsd')
+    >>> schema.build()
+
+Another option, available from release v1.6.1, is to provide a list of schema sources,
+particurlaly useful when sources have no locations associated:
+
+.. doctest::
+
+    >>> sources = [open('tests/test_cases/examples/vehicles/vehicles.xsd'),
+    ...            open('tests/test_cases/examples/vehicles/cars.xsd'),
+    ...            open('tests/test_cases/examples/vehicles/bikes.xsd'),
+    ...            open('tests/test_cases/examples/vehicles/types.xsd')]
+    >>> schema = xmlschema.XMLSchema(sources)
+
+or similarly to the previous example one can use the method :meth:`add_schema()`:
+
+.. doctest::
+
+    >>> schema_file = open('tests/test_cases/examples/vehicles/vehicles.xsd')
+    >>> schema = xmlschema.XMLSchema(schema_file, build=False)
+    >>> _ = schema.add_schema(open('tests/test_cases/examples/vehicles/cars.xsd'))
+    >>> _ = schema.add_schema(open('tests/test_cases/examples/vehicles/bikes.xsd'))
+    >>> _ = schema.add_schema(open('tests/test_cases/examples/vehicles/types.xsd'))
+    >>> schema.build()
+
+
+.. note::
+    Anyway the advice is to build intermediate XSD schemas intead for loading
+    all the schemas needed in a standard way, because XSD mechanisms of imports,
+    includes, redefines and overrides are usually supported when you submit your
+    schemas to other XSD validators.
+
+
 Validation
 ==========
 
@@ -465,19 +510,5 @@ available for representing XML resources with a related schema:
     >>> xml_document.schema
     XMLSchema10(name='vehicles.xsd', namespace='http://example.com/vehicles')
 
-This class can be used to derive specialized schema-related classes. An example of
-specialization is the class :class:`Wsdl11Document`, usable for validating and
-parsing WSDL 1.1 documents, that can be imported from *wsdl* module:
-
-.. doctest::
-
-    >>> from xmlschema.wsdl import Wsdl11Document
-    >>> wsdl_document = Wsdl11Document('tests/test_cases/examples/stockquote/stockquoteservice.wsdl')
-    >>> wsdl_document.schema
-    XMLSchema10(name='wsdl.xsd', namespace='http://schemas.xmlsoap.org/wsdl/')
-
-A parsed WSDL 1.1 document can aggregate a set of WSDL/XSD files for building
-interrelated set of definitions in multiple namespaces. The XMLResource base
-class and schema validation assure a fully checked WSDL document with
-protections against XML attacks.
-See :class:`xmlschema.wsdl.Wsdl11Document` API for details.
+This class can be used to derive specialized schema-related classes.
+See :ref:`wsdl11-documents` section for an application example.

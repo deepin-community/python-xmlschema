@@ -7,6 +7,7 @@
 #
 # @author Davide Brunato <brunato@sissa.it>
 #
+# type: ignore
 """
 Test factory for creating test cases from lists of paths to XSD or XML files.
 
@@ -21,9 +22,9 @@ import os
 import fileinput
 import logging
 
-from ..cli import xsd_version_number, defuse_data
-from ..validators import XMLSchema10, XMLSchema11
-from .observers import ObservedXMLSchema10, ObservedXMLSchema11
+from xmlschema.cli import xsd_version_number, defuse_data
+from xmlschema.validators import XMLSchema10, XMLSchema11
+from ._observers import ObservedXMLSchema10, ObservedXMLSchema11
 
 logger = logging.getLogger(__file__)
 
@@ -64,6 +65,8 @@ def get_test_program_args_parser(default_testfiles):
     # xmlschema's arguments
     parser.add_argument('--lxml', dest='lxml', action='store_true', default=False,
                         help='Check also with lxml.etree.XMLSchema (for XSD 1.0)')
+    parser.add_argument('--codegen', action="store_true", default=False,
+                        help="Test code generation with XML data bindings module.")
     parser.add_argument('testfiles', type=str, nargs='*', default=default_testfiles,
                         help="Test cases directory.")
     return parser
@@ -105,6 +108,14 @@ def get_test_line_args_parser():
         help="Timeout for fetching resources (default=300)."
     )
     parser.add_argument(
+        '--validation-only', action="store_true", default=False,
+        help="Skip decode/encode tests on XML data."
+    )
+    parser.add_argument(
+        '--no-pickle', action="store_true", default=False,
+        help="Skip pickling/unpickling test on schema (max recursion exceeded)."
+    )
+    parser.add_argument(
         '--lax-encode', action="store_true", default=False,
         help="Use lax mode on encode checks (for cases where test data uses default or "
              "fixed values or some test data are skipped by wildcards processContents). "
@@ -114,18 +125,28 @@ def get_test_line_args_parser():
         '--debug', action="store_true", default=False,
         help="Activate the debug mode (only the cases with --debug are executed).",
     )
+    parser.add_argument(
+        '--codegen', action="store_true", default=False,
+        help="Test code generation with XML data bindings module. For default "
+             "test code generation if the same command option is provided.",
+    )
     return parser
 
 
-def factory_tests(test_class_builder, testfiles, suffix, check_with_lxml=False):
+def factory_tests(test_class_builder, testfiles, suffix,
+                  check_with_lxml=False, codegen=False, verbosity=1):
     """
     Factory function for file based schema/validation cases.
 
     :param test_class_builder: the test class builder function.
     :param testfiles: a single or a list of testfiles indexes.
     :param suffix: the suffix ('xml' or 'xsd') to consider for cases.
-    :param check_with_lxml: if `True` compare with lxml XMLSchema class, reporting \
-    anomalies. Works only for XSD 1.0 tests.
+    :param check_with_lxml: if `True` compare with lxml XMLSchema class, \
+    reporting anomalies. Works only for XSD 1.0 tests.
+    :param codegen: if `True` is provided checks code generation with XML data \
+    bindings module for all tests. For default is `False` and code generation \
+    is tested only for the cases where the same option is provided.
+    :param verbosity: the unittest's verbosity, can be 0, 1 or 2.
     :return: a list of test classes.
     """
     test_classes = {}
@@ -156,6 +177,8 @@ def factory_tests(test_class_builder, testfiles, suffix, check_with_lxml=False):
         test_args = test_line_parser.parse_args(get_test_args(line))
         if test_args.locations is not None:
             test_args.locations = {k.strip('\'"'): v for k, v in test_args.locations}
+        if codegen:
+            test_args.codegen = True
 
         test_file = os.path.join(os.path.dirname(fileinput.filename()), test_args.filename)
         if os.path.isdir(test_file):
@@ -192,6 +215,9 @@ def factory_tests(test_class_builder, testfiles, suffix, check_with_lxml=False):
             )
 
         test_classes[test_class.__name__] = test_class
+        if verbosity == 2:
+            print(f"Create case {test_class.__name__} for file {os.path.relpath(test_file)}")
+
         logger.debug("Add XSD %s test class %r.", test_args.version, test_class.__name__)
 
     if line_buffer:

@@ -6,6 +6,7 @@
 #
 # @author Davide Brunato <brunato@sissa.it>
 #
+# type: ignore
 """Command Line Interface"""
 import sys
 import os
@@ -34,15 +35,13 @@ CONVERTERS_MAP = {
 
 def xsd_version_number(value):
     if value not in ('1.0', '1.1'):
-        msg = "%r is not an XSD version." % value
-        raise argparse.ArgumentTypeError(msg)
+        raise argparse.ArgumentTypeError("%r is not a valid XSD version" % value)
     return value
 
 
 def defuse_data(value):
     if value not in ('always', 'remote', 'never'):
-        msg = "%r is not a valid value." % value
-        raise argparse.ArgumentTypeError(msg)
+        raise argparse.ArgumentTypeError("%r is not a valid value" % value)
     return value
 
 
@@ -64,7 +63,7 @@ def get_converter(name):
     try:
         return CONVERTERS_MAP[name]
     except KeyError:
-        raise ValueError("--converter must be in {!r}".format_map(list(CONVERTERS_MAP)))
+        raise ValueError("--converter must be in {!r}".format(tuple(CONVERTERS_MAP)))
 
 
 def xml2json():
@@ -87,6 +86,9 @@ def xml2json():
                              "{!r}.".format(tuple(CONVERTERS_MAP)))
     parser.add_argument('--lazy', action='store_true', default=False,
                         help="use lazy decoding mode (slower but use less memory).")
+    parser.add_argument('--defuse', metavar='(always, remote, never)',
+                        type=defuse_data, default='remote',
+                        help="when to defuse XML data, on remote resources for default.")
     parser.add_argument('-o', '--output', type=str, default='.',
                         help="where to write the encoded XML files, current dir by default.")
     parser.add_argument('-f', '--force', action="store_true", default=False,
@@ -126,6 +128,7 @@ def xml2json():
                     cls=schema_class,
                     converter=converter,
                     lazy=args.lazy,
+                    defuse=args.defuse,
                     validation='lax',
                 )
             except (xmlschema.XMLSchemaException, URLError) as err:
@@ -231,15 +234,21 @@ def validate():
                         metavar="URI/URL", help="schema location hint overrides.")
     parser.add_argument('--lazy', action='store_true', default=False,
                         help="use lazy validation mode (slower but use less memory).")
+    parser.add_argument('--defuse', metavar='(always, remote, never)',
+                        type=defuse_data, default='remote',
+                        help="when to defuse XML data, on remote resources for default.")
     parser.add_argument('files', metavar='[XML_FILE ...]', nargs='+',
                         help="XML files to be validated.")
 
     args = parser.parse_args()
 
+    schema_class = XMLSchema if args.version == '1.0' else XMLSchema11
+
     tot_errors = 0
     for filepath in args.files:
         try:
-            errors = list(iter_errors(filepath, schema=args.schema, lazy=args.lazy))
+            errors = list(iter_errors(filepath, schema=args.schema, cls=schema_class,
+                                      locations=args.locations, lazy=args.lazy, defuse=args.defuse))
         except (xmlschema.XMLSchemaException, URLError) as err:
             tot_errors += 1
             print(str(err))
@@ -252,11 +261,3 @@ def validate():
                 print("{} is not valid".format(filepath))
 
     sys.exit(tot_errors)
-
-
-if __name__ == '__main__':
-    if sys.version_info < (3, 5, 0):
-        sys.stderr.write("You need python 3.5 or later to run this program\n")
-        sys.exit(1)
-
-    validate()

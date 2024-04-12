@@ -1,5 +1,5 @@
 #
-# Copyright (c), 2016-2020, SISSA (International School for Advanced Studies).
+# Copyright (c), 2016-2021, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
 # See the file 'LICENSE' in the root directory of the present
@@ -9,11 +9,12 @@
 #
 import re
 from collections import Counter
-from typing import Callable, Dict, Iterator, Optional, Tuple
+from decimal import Decimal
+from typing import Any, Callable, Iterator, List, MutableMapping, \
+    Optional, Tuple, Union
 from .exceptions import XMLSchemaValueError, XMLSchemaTypeError
 from .names import XSI_SCHEMA_LOCATION, XSI_NONS_SCHEMA_LOCATION
-
-from xml.etree.ElementTree import Element
+from .aliases import ElementType, NamespacesType, AtomicValueType, NumericValueType
 
 ###
 # Helper functions for QNames
@@ -21,23 +22,23 @@ from xml.etree.ElementTree import Element
 NAMESPACE_PATTERN = re.compile(r'{([^}]*)}')
 
 
-def get_namespace(qname: str, namespaces: Optional[Dict[str, str]] = None) -> str:
+def get_namespace(qname: str, namespaces: Optional[NamespacesType] = None) -> str:
     """
     Returns the namespace URI associated with a QName. If a namespace map is
     provided tries to resolve a prefixed QName and then to extract the namespace.
 
     :param qname: an extended QName or a local name or a prefixed QName.
-    :param namespaces: optional dictionary with a map from prefixes to namespace URIs.
+    :param namespaces: optional mapping from prefixes to namespace URIs.
     """
     if not qname:
         return ''
     elif qname[0] != '{':
-        if not namespaces:
+        if namespaces is None:
             return ''
         qname = get_extended_qname(qname, namespaces)
 
     try:
-        return NAMESPACE_PATTERN.match(qname).group(1)
+        return NAMESPACE_PATTERN.match(qname).group(1)  # type: ignore[union-attr]
     except (AttributeError, TypeError):
         return ''
 
@@ -74,22 +75,22 @@ def local_name(qname: str) -> str:
     except ValueError:
         raise XMLSchemaValueError("the argument 'qname' has a wrong format: %r" % qname)
     except TypeError:
-        if qname is None:
-            return qname
-        raise XMLSchemaTypeError("the argument 'qname' must be a string-like object or None")
+        raise XMLSchemaTypeError("the argument 'qname' must be a string")
     else:
         return qname
 
 
-def get_prefixed_qname(qname: str, namespaces: Dict[str, str], use_empty: bool = True) -> str:
+def get_prefixed_qname(qname: str,
+                       namespaces: Optional[MutableMapping[str, str]],
+                       use_empty: bool = True) -> str:
     """
     Get the prefixed form of a QName, using a namespace map.
 
     :param qname: an extended QName or a local name or a prefixed QName.
-    :param namespaces: a dictionary with a map from prefixes to namespace URIs.
+    :param namespaces: an optional mapping from prefixes to namespace URIs.
     :param use_empty: if `True` use the empty prefix for mapping.
     """
-    if not qname or qname[0] != '{':
+    if not namespaces or not qname or qname[0] != '{':
         return qname
 
     namespace = get_namespace(qname)
@@ -107,14 +108,17 @@ def get_prefixed_qname(qname: str, namespaces: Dict[str, str], use_empty: bool =
         return qname
 
 
-def get_extended_qname(qname: str, namespaces: Dict[str, str]) -> str:
+def get_extended_qname(qname: str, namespaces: Optional[MutableMapping[str, str]]) -> str:
     """
     Get the extended form of a QName, using a namespace map.
     Local names are mapped to the default namespace.
 
     :param qname: a prefixed QName or a local name or an extended QName.
-    :param namespaces: a dictionary with a map from prefixes to namespace URIs.
+    :param namespaces: an optional mapping from prefixes to namespace URIs.
     """
+    if not namespaces:
+        return qname
+
     try:
         if qname[0] == '{':
             return qname
@@ -150,9 +154,11 @@ def is_etree_document(obj: object) -> bool:
     return hasattr(obj, 'getroot') and hasattr(obj, 'parse') and hasattr(obj, 'iter')
 
 
-def etree_iterpath(elem: Element, tag: Optional[str] = None,
-                   path='.', namespaces: Optional[Dict[str, str]] = None,
-                   add_position=False) -> Iterator[Tuple[Element, str]]:
+def etree_iterpath(elem: ElementType,
+                   tag: Optional[str] = None,
+                   path: str = '.',
+                   namespaces: Optional[NamespacesType] = None,
+                   add_position: bool = False) -> Iterator[Tuple[ElementType, str]]:
     """
     Creates an iterator for the element and its subelements that yield elements and paths.
     If tag is not `None` or '*', only elements whose matches tag are returned from the iterator.
@@ -171,10 +177,10 @@ def etree_iterpath(elem: Element, tag: Optional[str] = None,
         yield elem, path
 
     if add_position:
-        children_tags = Counter([e.tag for e in elem])
-        positions = Counter([t for t in children_tags if children_tags[t] > 1])
+        children_tags = Counter(e.tag for e in elem)
+        positions = Counter(t for t in children_tags if children_tags[t] > 1)
     else:
-        positions = ()
+        positions = Counter()
 
     for child in elem:
         if callable(child.tag):
@@ -193,14 +199,18 @@ def etree_iterpath(elem: Element, tag: Optional[str] = None,
         yield from etree_iterpath(child, tag, child_path, namespaces, add_position)
 
 
-def etree_getpath(elem: Element, root: Element, namespaces: Optional[Dict[str, str]] = None,
-                  relative=True, add_position=False, parent_path=False) -> Optional[str]:
+def etree_getpath(elem: ElementType,
+                  root: ElementType,
+                  namespaces: Optional[NamespacesType] = None,
+                  relative: bool = True,
+                  add_position: bool = False,
+                  parent_path: bool = False) -> Optional[str]:
     """
     Returns the XPath path from *root* to descendant *elem* element.
 
     :param elem: the descendant element.
     :param root: the root element.
-    :param namespaces: is an optional mapping from namespace prefix to URI.
+    :param namespaces: an optional mapping from namespace prefix to URI.
     :param relative: returns a relative path.
     :param add_position: add context position to child elements that appear multiple times.
     :param parent_path: if set to `True` returns the parent path. Default is `False`.
@@ -221,9 +231,10 @@ def etree_getpath(elem: Element, root: Element, namespaces: Optional[Dict[str, s
         for e, path in etree_iterpath(root, None, path, namespaces, add_position):
             if elem in e:
                 return path
+    return None
 
 
-def etree_iter_location_hints(elem: Element) -> Iterator[Element]:
+def etree_iter_location_hints(elem: ElementType) -> Iterator[Tuple[Any, Any]]:
     """Yields schema location hints contained in the attributes of an element."""
     if XSI_SCHEMA_LOCATION in elem.attrib:
         locations = elem.attrib[XSI_SCHEMA_LOCATION].split()
@@ -235,7 +246,8 @@ def etree_iter_location_hints(elem: Element) -> Iterator[Element]:
             yield '', url
 
 
-def prune_etree(root: Element, selector: Callable[[Element], bool]) -> Optional[bool]:
+def prune_etree(root: ElementType, selector: Callable[[ElementType], bool]) \
+        -> Optional[bool]:
     """
     Removes from an tree structure the elements that verify the selector
     function. The checking and eventual removals are performed using a
@@ -245,7 +257,7 @@ def prune_etree(root: Element, selector: Callable[[Element], bool]) -> Optional[
     :param selector: the single argument function to apply on each visited node.
     :return: `True` if the root node verify the selector function, `None` otherwise.
     """
-    def _prune_subtree(elem):
+    def _prune_subtree(elem: ElementType) -> None:
         for child in elem[:]:
             if selector(child):
                 elem.remove(child)
@@ -257,3 +269,55 @@ def prune_etree(root: Element, selector: Callable[[Element], bool]) -> Optional[
         del root[:]
         return True
     _prune_subtree(root)
+    return None
+
+
+def count_digits(number: NumericValueType) -> Tuple[int, int]:
+    """
+    Counts the digits of a number.
+
+    :param number: an int or a float or a Decimal or a string representing a number.
+    :return: a couple with the number of digits of the integer part and \
+    the number of digits of the decimal part.
+    """
+    if isinstance(number, str):
+        number = str(Decimal(number)).lstrip('-+')
+    elif isinstance(number, bytes):
+        number = str(Decimal(number.decode())).lstrip('-+')
+    else:
+        number = str(number).lstrip('-+')
+
+    if 'E' in number:
+        significand, _, _exponent = number.partition('E')
+    elif 'e' in number:
+        significand, _, _exponent = number.partition('e')
+    elif '.' not in number:
+        return len(number.lstrip('0')), 0
+    else:
+        integer_part, _, decimal_part = number.partition('.')
+        return len(integer_part.lstrip('0')), len(decimal_part.rstrip('0'))
+
+    significand = significand.strip('0')
+    exponent = int(_exponent)
+
+    num_digits = len(significand) - 1 if '.' in significand else len(significand)
+    if exponent > 0:
+        return num_digits + exponent, 0
+    else:
+        return 0, num_digits - exponent - 1
+
+
+def strictly_equal(obj1: object, obj2: object) -> bool:
+    """Checks if the objects are equal and are of the same type."""
+    return obj1 == obj2 and type(obj1) is type(obj2)
+
+
+def raw_xml_encode(value: Union[None, AtomicValueType, List[AtomicValueType],
+                                Tuple[AtomicValueType, ...]]) -> Optional[str]:
+    """Encodes a simple value to XML."""
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    elif isinstance(value, (list, tuple)):
+        return ' '.join(str(e) for e in value)
+    else:
+        return str(value) if value is not None else None
