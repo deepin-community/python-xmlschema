@@ -7,6 +7,7 @@
 #
 # @author Davide Brunato <brunato@sissa.it>
 #
+# type: ignore
 """
 Subpackage with unittest extensions for xmlschema.
 
@@ -20,11 +21,12 @@ custom setting for each test.
 from urllib.request import urlopen
 from urllib.error import URLError
 
-from .case_class import XsdValidatorTestCase
-from .builders import make_schema_test_class, make_validation_test_class
-from .factory import get_test_args, xsd_version_number, defuse_data, \
+from ._helpers import iter_nested_items, etree_elements_assert_equal
+from ._case_class import XsdValidatorTestCase
+from ._builders import make_schema_test_class, make_validation_test_class
+from ._factory import get_test_args, xsd_version_number, defuse_data, \
     get_test_program_args_parser, get_test_line_args_parser, factory_tests
-from .observers import SchemaObserver, ObservedXMLSchema10, ObservedXMLSchema11
+from ._observers import SchemaObserver, ObservedXMLSchema10, ObservedXMLSchema11
 
 
 def has_network_access(*locations):
@@ -47,5 +49,6 @@ __all__ = [
     'XsdValidatorTestCase', 'make_schema_test_class', 'make_validation_test_class',
     'get_test_args', 'xsd_version_number', 'defuse_data', 'get_test_program_args_parser',
     'get_test_line_args_parser', 'factory_tests', 'SchemaObserver', 'ObservedXMLSchema10',
-    'ObservedXMLSchema11', 'has_network_access', 'SKIP_REMOTE_TESTS',
+    'ObservedXMLSchema11', 'has_network_access', 'iter_nested_items',
+    'etree_elements_assert_equal', 'SKIP_REMOTE_TESTS',
 ]

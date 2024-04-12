@@ -143,6 +143,37 @@ class TestXsdSimpleTypes(XsdValidatorTestCase):
                 </xs:restriction>
             </xs:simpleType>""")
 
+    def test_is_empty(self):
+        schema = self.check_schema("""
+            <xs:simpleType name="emptyType1">
+                <xs:restriction base="xs:string">
+                    <xs:maxLength value="0"/>
+                </xs:restriction>
+            </xs:simpleType>
+
+            <xs:simpleType name="emptyType2">
+                <xs:restriction base="xs:string">
+                    <xs:length value="0"/>
+                </xs:restriction>
+            </xs:simpleType>
+            
+            <xs:simpleType name="emptyType3">
+                <xs:restriction base="xs:string">
+                    <xs:enumeration value=""/>
+                </xs:restriction>
+            </xs:simpleType>
+
+            <xs:simpleType name="notEmptyType1">
+                <xs:restriction base="xs:string">
+                    <xs:enumeration value=" "/>
+                </xs:restriction>
+            </xs:simpleType>""")
+
+        self.assertTrue(schema.types['emptyType1'].is_empty())
+        self.assertTrue(schema.types['emptyType2'].is_empty())
+        self.assertTrue(schema.types['emptyType3'].is_empty())
+        self.assertFalse(schema.types['notEmptyType1'].is_empty())
+
 
 class TestXsd11SimpleTypes(TestXsdSimpleTypes):
 
@@ -196,9 +227,9 @@ class TestXsd11SimpleTypes(TestXsdSimpleTypes):
             </xs:simpleType>""")
         self.assertFalse(schema.types['RestrictedDateTimeType'].is_valid('2000-01-01T12:00:00'))
 
-        with self.assertRaises(XMLSchemaValidationError) as ctx:
+        # '>' not supported between instances of 'DateTime' and 'str'
+        with self.assertRaises(XMLSchemaValidationError):
             schema.types['RestrictedDateTimeType'].validate('2000-01-01T12:00:00')
-        self.assertIn("wrong type <class 'str'> for operand", str(ctx.exception))
 
         schema = self.check_schema("""
         <xs:simpleType name='RestrictedDateTimeType'>

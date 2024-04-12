@@ -12,12 +12,18 @@ import unittest
 import os
 import platform
 import re
-import lxml.etree
+from textwrap import dedent
 
-from xmlschema.validators import XsdValidator, XsdComponent, XMLSchema10, \
-    XMLSchema11, XMLSchemaParseError, XMLSchemaValidationError, XsdGroup, XsdSimpleType
+try:
+    import lxml.etree as lxml_etree
+except ImportError:
+    lxml_etree = None
+
+from xmlschema.validators import XsdValidator, XsdComponent, XMLSchema10, XMLSchema11, \
+    XMLSchemaParseError, XMLSchemaValidationError, XsdAnnotation, XsdGroup, XsdSimpleType
 from xmlschema.names import XSD_NAMESPACE, XSD_ELEMENT, XSD_ANNOTATION, XSD_ANY_TYPE
 from xmlschema.etree import ElementTree
+from xmlschema.dataobjects import DataElement
 
 CASES_DIR = os.path.join(os.path.dirname(__file__), '../test_cases')
 
@@ -156,6 +162,25 @@ class TestXsdComponent(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             XsdComponent(elem=ElementTree.Element('A'), schema=self.schema)
+
+    def test_errors(self):
+        schema = XMLSchema10(dedent("""<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+            <xs:element name="root" type="xs:string">
+                <xs:simpleType>
+                    <xs:restriction base="xs:string"/>
+                </xs:simpleType>
+            </xs:element>
+        </xs:schema>"""), validation='lax')
+
+        xsd_element = schema.elements['root']
+        self.assertEqual(len(schema.all_errors), 1)
+        self.assertEqual(len(xsd_element.errors), 1)
+
+        xsd_element.elem.attrib.pop('type')
+        xsd_element.elem = xsd_element.elem
+
+        self.assertEqual(len(schema.all_errors), 0)
+        self.assertEqual(len(xsd_element.errors), 0)
 
     def test_is_override(self):
         self.assertFalse(self.schema.elements['cars'].is_override())
@@ -345,6 +370,44 @@ class TestXsdComponent(unittest.TestCase):
         self.assertTrue(xsd_element.is_matching(name))
         self.assertIs(xsd_element.match(name), xsd_element)
 
+    def test_get_matching_item(self):
+        xsd_element = self.schema.elements['vehicles']
+
+        self.assertIsNone(xsd_element.get_matching_item({}))
+        self.assertTrue(xsd_element.get_matching_item({xsd_element.qualified_name: True}))
+        self.assertTrue(xsd_element.get_matching_item({xsd_element.prefixed_name: True}))
+
+        mapping = {xsd_element.local_name: True}
+        self.assertIsNone(xsd_element.get_matching_item(mapping))
+        self.assertTrue(xsd_element.get_matching_item(mapping, match_local_name=True))
+
+        mapping = {xsd_element.type.local_name: True}  # type.name is None
+        self.assertIsNone(xsd_element.type.get_matching_item(mapping, match_local_name=True))
+
+        mapping = {'vhs:vehicles': True}
+        self.assertIsNone(xsd_element.get_matching_item(mapping))
+
+        self.schema.namespaces['vhs'] = self.schema.target_namespace
+        try:
+            self.assertTrue(xsd_element.get_matching_item(mapping))
+        finally:
+            self.schema.namespaces.pop('vhs')
+
+        mapping = {'vhs:vehicles': {'xmlns:vhs': self.schema.target_namespace}}
+        self.assertIs(xsd_element.get_matching_item(mapping), mapping['vhs:vehicles'])
+
+        mapping = {'vhs:vehicles': {'xmlns:vhs': 'http://xmlschema.test/ns'}}
+        self.assertIsNone(xsd_element.get_matching_item(mapping))
+
+        schema = XMLSchema10(dedent("""\
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+              <xs:element name="root"/>
+            </xs:schema>"""))
+        xsd_element = schema.elements['root']
+
+        self.assertTrue(xsd_element.get_matching_item({'root': True}))
+        self.assertIsNone(xsd_element.get_matching_item({'rook': True}))
+
     def test_get_global(self):
         xsd_element = self.schema.elements['vehicles']
         self.assertIs(xsd_element.get_global(), xsd_element)
@@ -381,7 +444,7 @@ class TestXsdComponent(unittest.TestCase):
         self.assertIn('name="car" type="vh:vehicleType"', cars_dump)
         self.assertIsInstance(ElementTree.XML(cars_dump), ElementTree.Element)
 
-    def test_annotation(self):
+    def test_annotations(self):
         schema = XMLSchema10("""<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
                      <xs:element name="root">
                          <xs:annotation/>
@@ -389,14 +452,24 @@ class TestXsdComponent(unittest.TestCase):
                  </xs:schema>""")
         self.assertTrue(schema.elements['root'].annotation.built)
 
-        root = lxml.etree.XML("""<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+        schema = XMLSchema10("""<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
                      <xs:element name="root">
-                        <!-- comment -->
-                        <xs:annotation/>
+                         <xs:simpleType>
+                             <xs:restriction base="xs:string"/>
+                         </xs:simpleType>
                      </xs:element>
                  </xs:schema>""")
-        schema = XMLSchema10(root)
-        self.assertTrue(schema.elements['root'].annotation.built)
+        self.assertIsNone(schema.elements['root'].annotation)
+
+        if lxml_etree is not None:
+            root = lxml_etree.XML("""<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                         <xs:element name="root">
+                            <!-- comment -->
+                            <xs:annotation/>
+                         </xs:element>
+                     </xs:schema>""")
+            schema = XMLSchema10(root)
+            self.assertTrue(schema.elements['root'].annotation.built)
 
         schema = XMLSchema10("""<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
                      <xs:element name="root">
@@ -408,6 +481,7 @@ class TestXsdComponent(unittest.TestCase):
                  </xs:schema>""")
         self.assertEqual(len(schema.all_errors), 0)
 
+        # XSD annotation errors found with meta-schema validation
         schema = XMLSchema10("""<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
                      <xs:element name="root">
                          <xs:annotation>
@@ -419,83 +493,94 @@ class TestXsdComponent(unittest.TestCase):
                  </xs:schema>""", validation='lax')
         self.assertEqual(len(schema.all_errors), 3)
 
+        # Lazy XSD annotation build (errors not counted in schema.all_errors)
+        xsd_element = schema.elements['root']
+        self.assertNotIn('_annotation', xsd_element.__dict__)
+        annotation = xsd_element.annotation
+        self.assertIsInstance(annotation, XsdAnnotation)
+        self.assertIn('_annotation', xsd_element.__dict__)
+        self.assertEqual(len(schema.all_errors), 3)
+        self.assertEqual(len(annotation.errors), 0)  # see issue 287
+        self.assertIsNone(annotation.annotation)
+
 
 class TestXsdType(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.schema = XMLSchema10("""<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+        cls.schema = XMLSchema10(dedent("""\
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+            
+                 <xs:simpleType name="emptyType">
+                     <xs:restriction base="xs:string">
+                         <xs:length value="0"/>
+                     </xs:restriction>
+                 </xs:simpleType>
 
-                     <xs:simpleType name="emptyType">
-                         <xs:restriction base="xs:string">
-                             <xs:length value="0"/>
+                 <xs:complexType name="emptyType2">
+                     <xs:attribute name="foo" type="xs:string"/>
+                 </xs:complexType>        
+
+                 <xs:simpleType name="idType">
+                     <xs:restriction base="xs:ID"/>
+                 </xs:simpleType>
+
+                 <xs:simpleType name="decimalType">
+                     <xs:restriction base="xs:decimal"/>
+                 </xs:simpleType>
+
+                 <xs:simpleType name="dateTimeType">
+                     <xs:restriction base="xs:dateTime"/>
+                 </xs:simpleType>
+                 
+                 <xs:simpleType name="fooType">
+                     <xs:restriction base="xs:string"/>
+                 </xs:simpleType>
+
+                 <xs:simpleType name="fooListType">
+                     <xs:list itemType="xs:string"/>
+                 </xs:simpleType>
+
+                 <xs:simpleType name="fooUnionType">
+                     <xs:union memberTypes="xs:string xs:anyURI"/>
+                 </xs:simpleType>
+                 
+                 <xs:complexType name="barType">
+                     <xs:sequence>
+                         <xs:element name="node"/>
+                     </xs:sequence>
+                 </xs:complexType>        
+
+                 <xs:complexType name="barExtType">
+                     <xs:complexContent>
+                         <xs:extension base="barType">
+                             <xs:sequence>
+                                 <xs:element name="node"/>
+                             </xs:sequence>
+                         </xs:extension>
+                     </xs:complexContent>
+                 </xs:complexType>        
+
+                 <xs:complexType name="barResType">
+                     <xs:complexContent>
+                         <xs:restriction base="barType">
+                             <xs:sequence>
+                                 <xs:element name="node"/>
+                             </xs:sequence>
                          </xs:restriction>
-                     </xs:simpleType>
+                     </xs:complexContent>
+                 </xs:complexType>        
 
-                     <xs:complexType name="emptyType2">
-                         <xs:attribute name="foo" type="xs:string"/>
-                     </xs:complexType>        
+                 <xs:complexType name="mixedType" mixed="true">
+                     <xs:sequence>
+                         <xs:element name="node" type="xs:string"/>
+                     </xs:sequence>
+                 </xs:complexType>        
 
-                     <xs:simpleType name="idType">
-                         <xs:restriction base="xs:ID"/>
-                     </xs:simpleType>
-
-                     <xs:simpleType name="decimalType">
-                         <xs:restriction base="xs:decimal"/>
-                     </xs:simpleType>
-
-                     <xs:simpleType name="dateTimeType">
-                         <xs:restriction base="xs:dateTime"/>
-                     </xs:simpleType>
+                 <xs:element name="fooElem" type="fooType"/>
+                 <xs:element name="barElem" type="barType" block="extension"/>
                      
-                     <xs:simpleType name="fooType">
-                         <xs:restriction base="xs:string"/>
-                     </xs:simpleType>
-
-                     <xs:simpleType name="fooListType">
-                         <xs:list itemType="xs:string"/>
-                     </xs:simpleType>
-
-                     <xs:simpleType name="fooUnionType">
-                         <xs:union memberTypes="xs:string xs:anyURI"/>
-                     </xs:simpleType>
-                     
-                     <xs:complexType name="barType">
-                         <xs:sequence>
-                             <xs:element name="node"/>
-                         </xs:sequence>
-                     </xs:complexType>        
-
-                     <xs:complexType name="barExtType">
-                         <xs:complexContent>
-                             <xs:extension base="barType">
-                                 <xs:sequence>
-                                     <xs:element name="node"/>
-                                 </xs:sequence>
-                             </xs:extension>
-                         </xs:complexContent>
-                     </xs:complexType>        
-
-                     <xs:complexType name="barResType">
-                         <xs:complexContent>
-                             <xs:restriction base="barType">
-                                 <xs:sequence>
-                                     <xs:element name="node"/>
-                                 </xs:sequence>
-                             </xs:restriction>
-                         </xs:complexContent>
-                     </xs:complexType>        
-
-                     <xs:complexType name="mixedType" mixed="true">
-                         <xs:sequence>
-                             <xs:element name="node" type="xs:string"/>
-                         </xs:sequence>
-                     </xs:complexType>        
-
-                     <xs:element name="fooElem" type="fooType"/>
-                     <xs:element name="barElem" type="barType" block="extension"/>
-                     
-                 </xs:schema>""")
+            </xs:schema>"""))
 
     def test_content_type_label(self):
         self.assertEqual(self.schema.types['emptyType'].content_type_label, 'empty')
@@ -520,6 +605,11 @@ class TestXsdType(unittest.TestCase):
         self.assertIs(self.schema.types['mixedType'].root_type,
                       self.schema.maps.types[XSD_ANY_TYPE])
         self.assertIs(self.schema.types['barExtType'].root_type,
+                      self.schema.maps.types[XSD_ANY_TYPE])
+
+        # xs:anyType used by the schema is equivalent but is not the same object of
+        # the meta schema because it can be used as base for schema's complex types
+        self.assertIs(self.schema.types['emptyType2'].root_type,
                       self.schema.maps.types[XSD_ANY_TYPE])
 
     def test_is_atomic(self):
@@ -609,6 +699,22 @@ class TestValidationMixin(unittest.TestCase):
         self.assertIn(self.schema.elements['cars'].name, obj)
         self.assertIn(self.schema.elements['bikes'].name, obj)
         self.assertEqual(len(errors), 2)
+
+    def test_decode_to_objects(self):
+        xml_file = os.path.join(CASES_DIR, 'examples/vehicles/vehicles.xml')
+        root = ElementTree.parse(xml_file).getroot()
+
+        obj = self.schema.elements['vehicles'].to_objects(root)
+        self.assertIsInstance(obj, DataElement)
+        self.assertEqual(self.schema.elements['vehicles'].name, obj.tag)
+        self.assertIs(obj.__class__, DataElement)
+
+        obj = self.schema.elements['vehicles'].to_objects(root, with_bindings=True)
+        self.assertIsInstance(obj, DataElement)
+        self.assertEqual(self.schema.elements['vehicles'].name, obj.tag)
+        self.assertIsNot(obj.__class__, DataElement)
+        self.assertTrue(issubclass(obj.__class__, DataElement))
+        self.assertEqual(obj.__class__.__name__, 'VehiclesBinding')
 
     def test_encode(self):
         xml_file = os.path.join(CASES_DIR, 'examples/vehicles/vehicles.xml')

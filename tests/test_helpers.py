@@ -19,15 +19,16 @@ from xmlschema.etree import ElementTree, etree_element
 from xmlschema.names import XSD_NAMESPACE, XSI_NAMESPACE, XSD_SCHEMA, \
     XSD_ELEMENT, XSD_SIMPLE_TYPE, XSD_ANNOTATION, XSI_TYPE
 from xmlschema.helpers import prune_etree, get_namespace, get_qname, \
-    local_name, get_prefixed_qname, get_extended_qname
-from xmlschema.testing.helpers import iter_nested_items
+    local_name, get_prefixed_qname, get_extended_qname, raw_xml_encode, \
+    count_digits, strictly_equal
+from xmlschema.testing import iter_nested_items
 from xmlschema.validators.exceptions import XMLSchemaValidationError
 from xmlschema.validators.helpers import get_xsd_derivation_attribute, \
-    raw_xml_encode, count_digits, strictly_equal, decimal_validator, \
-    qname_validator, base64_binary_validator, hex_binary_validator, \
+    decimal_validator, qname_validator, \
+    base64_binary_validator, hex_binary_validator, \
     int_validator, long_validator, unsigned_byte_validator, \
     unsigned_short_validator, negative_int_validator, error_type_validator
-from xmlschema.validators.models import OccursCounter
+from xmlschema.validators.particles import OccursCalculator
 
 
 class TestHelpers(unittest.TestCase):
@@ -45,13 +46,20 @@ class TestHelpers(unittest.TestCase):
             'a1': 'extension', 'a2': ' restriction', 'a3': '#all', 'a4': 'other',
             'a5': 'restriction extension restriction ', 'a6': 'other restriction'
         })
-        values = ('extension', 'restriction')
+        values = {'extension', 'restriction'}
         self.assertEqual(get_xsd_derivation_attribute(elem, 'a1', values), 'extension')
         self.assertEqual(get_xsd_derivation_attribute(elem, 'a2', values), ' restriction')
-        self.assertEqual(get_xsd_derivation_attribute(elem, 'a3', values), 'extension restriction')
+
+        result = get_xsd_derivation_attribute(elem, 'a3', values)
+        self.assertSetEqual(set(result.strip().split()),
+                            set('extension restriction'.split()))
+
         self.assertRaises(ValueError, get_xsd_derivation_attribute, elem, 'a4', values)
-        self.assertEqual(get_xsd_derivation_attribute(elem, 'a5', values),
-                         'restriction extension restriction ')
+
+        result = get_xsd_derivation_attribute(elem, 'a5', values)
+        self.assertEqual(set(result.strip().split()),
+                         set('restriction extension restriction'.split()))
+
         self.assertRaises(ValueError, get_xsd_derivation_attribute, elem, 'a6', values)
         self.assertEqual(get_xsd_derivation_attribute(elem, 'a7', values), '')
 
@@ -83,6 +91,7 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(component._parse_child_component(elem), elem[2])
 
     def test_raw_xml_encode_function(self):
+        self.assertIsNone(raw_xml_encode(None))
         self.assertEqual(raw_xml_encode(True), 'true')
         self.assertEqual(raw_xml_encode(False), 'false')
         self.assertEqual(raw_xml_encode(10), '10')
@@ -137,42 +146,42 @@ class TestHelpers(unittest.TestCase):
         with self.assertRaises(TypeError):
             list(iter_nested_items([10, 20], list_class=tuple))
 
-    def test_occurs_counter_class(self):
-        counter = OccursCounter()
-        self.assertEqual(repr(counter), 'OccursCounter(0, 0)')
+    def test_occurs_calculator_class(self):
+        counter = OccursCalculator()
+        self.assertEqual(repr(counter), 'OccursCalculator(0, 0)')
 
-        other = OccursCounter()  # Only for test isolation, usually it's a particle.
+        other = OccursCalculator()  # Only for test isolation, usually it's a particle.
         other.min_occurs = 5
         other.max_occurs = 10
 
         counter += other
-        self.assertEqual(repr(counter), 'OccursCounter(5, 10)')
+        self.assertEqual(repr(counter), 'OccursCalculator(5, 10)')
         counter *= other
-        self.assertEqual(repr(counter), 'OccursCounter(25, 100)')
+        self.assertEqual(repr(counter), 'OccursCalculator(25, 100)')
 
-        counter = OccursCounter()
+        counter = OccursCalculator()
         counter.max_occurs = None
-        self.assertEqual(repr(counter), 'OccursCounter(0, None)')
-        self.assertEqual(repr(counter * other), 'OccursCounter(0, None)')
-        self.assertEqual(repr(counter + other), 'OccursCounter(5, None)')
-        self.assertEqual(repr(counter * other), 'OccursCounter(25, None)')
+        self.assertEqual(repr(counter), 'OccursCalculator(0, None)')
+        self.assertEqual(repr(counter * other), 'OccursCalculator(0, None)')
+        self.assertEqual(repr(counter + other), 'OccursCalculator(5, None)')
+        self.assertEqual(repr(counter * other), 'OccursCalculator(25, None)')
 
         counter.reset()
-        self.assertEqual(repr(counter), 'OccursCounter(0, 0)')
+        self.assertEqual(repr(counter), 'OccursCalculator(0, 0)')
 
         counter.max_occurs = None
         other.min_occurs = other.max_occurs = 0
-        self.assertEqual(repr(counter * other), 'OccursCounter(0, 0)')
+        self.assertEqual(repr(counter * other), 'OccursCalculator(0, 0)')
 
         counter.reset()
         other.min_occurs = 0
         other.max_occurs = None
-        self.assertEqual(repr(counter * other), 'OccursCounter(0, 0)')
-        self.assertEqual(repr(counter + other), 'OccursCounter(0, None)')
-        self.assertEqual(repr(counter + other), 'OccursCounter(0, None)')
+        self.assertEqual(repr(counter * other), 'OccursCalculator(0, 0)')
+        self.assertEqual(repr(counter + other), 'OccursCalculator(0, None)')
+        self.assertEqual(repr(counter + other), 'OccursCalculator(0, None)')
 
         counter.max_occurs = 1
-        self.assertEqual(repr(counter * other), 'OccursCounter(0, None)')
+        self.assertEqual(repr(counter * other), 'OccursCalculator(0, None)')
 
     def test_get_namespace(self):
         self.assertEqual(get_namespace(''), '')
@@ -209,8 +218,8 @@ class TestHelpers(unittest.TestCase):
         self.assertEqual(local_name(XSD_SCHEMA), 'schema')
         self.assertEqual(local_name('schema'), 'schema')
         self.assertEqual(local_name(''), '')
-        self.assertEqual(local_name(None), None)
 
+        self.assertRaises(TypeError, local_name, None)
         self.assertRaises(ValueError, local_name, '{ns name')
         self.assertRaises(TypeError, local_name, 1.0)
         self.assertRaises(TypeError, local_name, 0)
@@ -226,7 +235,7 @@ class TestHelpers(unittest.TestCase):
 
         self.assertEqual(get_prefixed_qname('', namespaces), '')
         self.assertEqual(get_prefixed_qname(None, namespaces), None)
-        # self.assertEqual(get_prefixed_qname(0, namespaces), 0)
+        self.assertEqual(get_prefixed_qname('{uri}element', namespaces), '{uri}element')
 
         self.assertEqual(get_prefixed_qname(XSI_TYPE, {}), XSI_TYPE)
         self.assertEqual(get_prefixed_qname(None, {}), None)

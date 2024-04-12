@@ -11,8 +11,9 @@
 A unified setup module for ElementTree with a safe parser and helper functions.
 """
 import sys
-import importlib
 import re
+from collections import namedtuple
+from typing import Any, MutableMapping, Optional, Union
 
 from .exceptions import XMLSchemaTypeError
 
@@ -26,31 +27,30 @@ _REGEX_NS_PREFIX = re.compile(r'ns\d+$')
 # defining a safer XMLParser.
 #
 if '_elementtree' in sys.modules:
-    # Temporary remove the loaded modules
-    try:
-        ElementTree = sys.modules.pop('xml.etree.ElementTree')
-    except KeyError:
-        # Reimporting xml.etree.ElementTree causes the loading of pure Python
-        # module instead of the optimized C version, so it's better to raise
-        # an error instead of running silently with mismatched modules.
+    if 'xml.etree.ElementTree' not in sys.modules:
         raise RuntimeError("Inconsistent status for ElementTree module: module "
                            "is missing but the C optimized version is imported.")
 
+    import xml.etree.ElementTree as ElementTree
+
+    # Temporary remove the loaded modules
+    sys.modules.pop('xml.etree.ElementTree')
     _cmod = sys.modules.pop('_elementtree')
 
     # Load the pure Python module
-    sys.modules['_elementtree'] = None
-    PyElementTree = importlib.import_module('xml.etree.ElementTree')
+    sys.modules['_elementtree'] = None  # type: ignore[assignment]
+    import xml.etree.ElementTree as PyElementTree
+    import xml.etree
 
     # Restore original modules
     sys.modules['_elementtree'] = _cmod
-    sys.modules['xml.etree'].ElementTree = ElementTree
+    xml.etree.ElementTree = ElementTree
     sys.modules['xml.etree.ElementTree'] = ElementTree
 
 else:
     # Load the pure Python module
-    sys.modules['_elementtree'] = None
-    PyElementTree = importlib.import_module('xml.etree.ElementTree')
+    sys.modules['_elementtree'] = None  # type: ignore[assignment]
+    import xml.etree.ElementTree as PyElementTree
 
     # Remove the pure Python module from imported modules
     del sys.modules['xml.etree']
@@ -58,7 +58,7 @@ else:
     del sys.modules['_elementtree']
 
     # Load the C optimized ElementTree module
-    ElementTree = importlib.import_module('xml.etree.ElementTree')
+    import xml.etree.ElementTree as ElementTree
 
 
 etree_element = ElementTree.Element
@@ -76,38 +76,56 @@ class SafeXMLParser(PyElementTree.XMLParser):
     :param encoding: if provided, its value overrides the encoding specified \
     in the XML file.
     """
-    def __init__(self, target=None, encoding=None):
+    def __init__(self, target: Optional[Any] = None, encoding: Optional[str] = None) -> None:
         super(SafeXMLParser, self).__init__(target=target, encoding=encoding)
         self.parser.EntityDeclHandler = self.entity_declaration
         self.parser.UnparsedEntityDeclHandler = self.unparsed_entity_declaration
         self.parser.ExternalEntityRefHandler = self.external_entity_reference
 
-    def entity_declaration(self, entity_name, is_parameter_entity, value, base,
+    def entity_declaration(self, entity_name, is_parameter_entity, value, base,  # type: ignore
                            system_id, public_id, notation_name):
         raise PyElementTree.ParseError(
             "Entities are forbidden (entity_name={!r})".format(entity_name)
         )
 
-    def unparsed_entity_declaration(self, entity_name, base, system_id,
+    def unparsed_entity_declaration(self, entity_name, base, system_id,  # type: ignore
                                     public_id, notation_name):
         raise PyElementTree.ParseError(
             "Unparsed entities are forbidden (entity_name={!r})".format(entity_name)
         )
 
-    def external_entity_reference(self, context, base, system_id, public_id):
+    def external_entity_reference(self, context, base, system_id, public_id):  # type: ignore
         raise PyElementTree.ParseError(
             "External references are forbidden (system_id={!r}, "
             "public_id={!r})".format(system_id, public_id)
         )  # pragma: no cover (EntityDeclHandler is called before)
 
 
-def is_etree_element(obj):
+ElementData = namedtuple('ElementData', ['tag', 'text', 'content', 'attributes'])
+"""
+Namedtuple for Element data interchange between decoders and converters.
+The field *tag* is a string containing the Element's tag, *text* can be `None`
+or a string representing the Element's text, *content* can be `None`, a list
+containing the Element's children or a dictionary containing element name to
+list of element contents for the Element's children (used for unordered input
+data), *attributes* can be `None` or a dictionary containing the Element's
+attributes.
+"""
+
+
+def is_etree_element(obj: Any) -> bool:
     """A checker for valid ElementTree elements that excludes XsdElement objects."""
     return hasattr(obj, 'append') and hasattr(obj, 'tag') and hasattr(obj, 'attrib')
 
 
-def etree_tostring(elem, namespaces=None, indent='', max_lines=None, spaces_for_tab=None,
-                   xml_declaration=None, encoding='unicode', method='xml'):
+def etree_tostring(elem: etree_element,
+                   namespaces: Optional[MutableMapping[str, str]] = None,
+                   indent: str = '',
+                   max_lines: Optional[int] = None,
+                   spaces_for_tab: Optional[int] = None,
+                   xml_declaration: Optional[bool] = None,
+                   encoding: str = 'unicode',
+                   method: str = 'xml') -> Union[str, bytes]:
     """
     Serialize an Element tree to a string. Tab characters are replaced by whitespaces.
 
@@ -125,7 +143,7 @@ def etree_tostring(elem, namespaces=None, indent='', max_lines=None, spaces_for_
     :param method: is either "xml" (the default), "html" or "text".
     :return: a Unicode string.
     """
-    def reindent(line):
+    def reindent(line: str) -> str:
         if not line:
             return line
         elif line.startswith(min_indent):
@@ -133,6 +151,7 @@ def etree_tostring(elem, namespaces=None, indent='', max_lines=None, spaces_for_
         else:
             return indent + line
 
+    etree_module: Any
     if not is_etree_element(elem):
         raise XMLSchemaTypeError("{!r} is not an Element".format(elem))
 
@@ -141,7 +160,7 @@ def etree_tostring(elem, namespaces=None, indent='', max_lines=None, spaces_for_
     elif not hasattr(elem, 'nsmap'):
         etree_module = ElementTree
     else:
-        etree_module = importlib.import_module('lxml.etree')
+        import lxml.etree as etree_module  # type: ignore[no-redef]
 
     if namespaces:
         default_namespace = namespaces.get('')
@@ -200,3 +219,7 @@ def etree_tostring(elem, namespaces=None, indent='', max_lines=None, spaces_for_
     if encoding == 'unicode':
         return '\n'.join(reindent(line) for line in lines)
     return '\n'.join(reindent(line) for line in lines).encode(encoding)
+
+
+__all__ = ['ElementTree', 'PyElementTree', 'ParseError', 'SafeXMLParser', 'etree_element',
+           'py_etree_element', 'ElementData', 'is_etree_element', 'etree_tostring']

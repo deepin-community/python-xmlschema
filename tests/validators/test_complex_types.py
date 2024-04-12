@@ -9,6 +9,7 @@
 # @author Davide Brunato <brunato@sissa.it>
 #
 import unittest
+import warnings
 
 from xmlschema import XMLSchemaParseError, XMLSchemaModelError
 from xmlschema.etree import etree_element
@@ -418,7 +419,46 @@ class TestXsdComplexType(XsdValidatorTestCase):
             </xs:schema>""")
 
         xsd_type = schema.types['type1']
-        self.assertIs(xsd_type.content_type, xsd_type.content)
+
+        with warnings.catch_warnings(record=True) as context:
+            warnings.simplefilter("always")
+            self.assertIs(xsd_type.content_type, xsd_type.content)
+
+        self.assertEqual(len(context), 1)
+        self.assertIs(context[0].category, DeprecationWarning)
+
+    def test_is_empty(self):
+        schema = self.check_schema("""
+            <xs:complexType name="emptyType1"/>
+            
+            <xs:complexType name="emptyType2">
+                <xs:sequence/>
+            </xs:complexType>
+            
+            <xs:complexType name="emptyType3">
+                <xs:complexContent>
+                    <xs:restriction base="xs:anyType"/>
+                </xs:complexContent>
+            </xs:complexType>
+
+            <xs:complexType name="notEmptyType1">
+                <xs:sequence>
+                    <xs:element name="elem1"/>
+                </xs:sequence>
+            </xs:complexType>
+            
+            <xs:complexType name="notEmptyType2">
+                <xs:complexContent>
+                    <xs:extension base="xs:anyType"/>
+                </xs:complexContent>
+            </xs:complexType>
+            """)
+
+        self.assertTrue(schema.types['emptyType1'].is_empty())
+        self.assertTrue(schema.types['emptyType2'].is_empty())
+        self.assertTrue(schema.types['emptyType3'].is_empty())
+        self.assertFalse(schema.types['notEmptyType1'].is_empty())
+        self.assertFalse(schema.types['notEmptyType2'].is_empty())
 
 
 class TestXsd11ComplexType(TestXsdComplexType):

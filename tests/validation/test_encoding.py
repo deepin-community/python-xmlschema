@@ -13,12 +13,18 @@ import os
 import unittest
 from textwrap import dedent
 
+try:
+    import lxml.etree as lxml_etree
+except ImportError:
+    lxml_etree = None
+
 from elementpath import datatypes
 
 from xmlschema import XMLSchemaEncodeError, XMLSchemaValidationError
 from xmlschema.converters import UnorderedConverter
 from xmlschema.etree import etree_element, etree_tostring, ElementTree
 from xmlschema.helpers import local_name, is_etree_element
+from xmlschema.resources import XMLResource
 from xmlschema.validators.exceptions import XMLSchemaChildrenValidationError
 from xmlschema.validators import XMLSchema11
 from xmlschema.testing import XsdValidatorTestCase
@@ -177,26 +183,26 @@ class TestEncoding(XsdValidatorTestCase):
 
     def test_list_types(self):
         list_of_strings = self.st_schema.types['list_of_strings']
-        self.check_encode(list_of_strings, (10, 25, 40), u'', validation='lax')
-        self.check_encode(list_of_strings, (10, 25, 40), u'10 25 40', validation='skip')
-        self.check_encode(list_of_strings, ['a', 'b', 'c'], u'a b c', validation='skip')
+        self.check_encode(list_of_strings, (10, 25, 40), '10 25 40', validation='lax')
+        self.check_encode(list_of_strings, (10, 25, 40), '10 25 40', validation='skip')
+        self.check_encode(list_of_strings, ['a', 'b', 'c'], 'a b c', validation='skip')
 
         list_of_integers = self.st_schema.types['list_of_integers']
-        self.check_encode(list_of_integers, (10, 25, 40), u'10 25 40')
+        self.check_encode(list_of_integers, (10, 25, 40), '10 25 40')
         self.check_encode(list_of_integers, (10, 25.0, 40), XMLSchemaValidationError)
-        self.check_encode(list_of_integers, (10, 25.0, 40), u'10 25 40', validation='lax')
+        self.check_encode(list_of_integers, (10, 25.0, 40), '10 25 40', validation='lax')
 
         list_of_floats = self.st_schema.types['list_of_floats']
-        self.check_encode(list_of_floats, [10.1, 25.0, 40.0], u'10.1 25.0 40.0')
-        self.check_encode(list_of_floats, [10.1, 25, 40.0], u'10.1 25.0 40.0', validation='lax')
-        self.check_encode(list_of_floats, [10.1, False, 40.0], u'10.1 0.0 40.0', validation='lax')
+        self.check_encode(list_of_floats, [10.1, 25.0, 40.0], '10.1 25.0 40.0')
+        self.check_encode(list_of_floats, [10.1, 25, 40.0], '10.1 25.0 40.0', validation='lax')
+        self.check_encode(list_of_floats, [10.1, False, 40.0], '10.1 0.0 40.0', validation='lax')
 
         list_of_booleans = self.st_schema.types['list_of_booleans']
-        self.check_encode(list_of_booleans, [True, False, True], u'true false true')
+        self.check_encode(list_of_booleans, [True, False, True], 'true false true')
         self.check_encode(list_of_booleans, [10, False, True], XMLSchemaEncodeError)
-        self.check_encode(list_of_booleans, [True, False, 40.0], u'true false', validation='lax')
+        self.check_encode(list_of_booleans, [True, False, 40.0], 'true false', validation='lax')
         self.check_encode(list_of_booleans, [True, False, 40.0],
-                          u'true false 40.0', validation='skip')
+                          'true false 40.0', validation='skip')
 
     def test_union_types(self):
         integer_or_float = self.st_schema.types['integer_or_float']
@@ -305,8 +311,10 @@ class TestEncoding(XsdValidatorTestCase):
         message_lines = []
         try:
             schema.encode(rotation_data)
-        except Exception as err:
+        except XMLSchemaValidationError as err:
             message_lines = str(err).split('\n')
+            self.assertIsNone(err.source)
+            self.assertIsNone(err.path)
 
         self.assertTrue(message_lines, msg="Empty error message!")
         self.assertEqual(message_lines[-4], 'Instance:')
@@ -317,6 +325,11 @@ class TestEncoding(XsdValidatorTestCase):
             text = '<tns:rotation xmlns:tns="http://www.example.org/Rotation/" ' \
                    'roll="0.0" pitch="0.0" yaw="-1.0" />'
         self.assertEqual(message_lines[-2].strip(), text)
+
+        # With 'lax' validation a dummy resource is assigned to source attribute
+        _, errors = schema.encode(rotation_data, validation='lax')
+        self.assertIsInstance(errors[0].source, XMLResource)
+        self.assertEqual(errors[0].path, '/{http://www.example.org/Rotation/}rotation')
 
     def test_max_occurs_sequence(self):
         # Issue #119
@@ -567,6 +580,85 @@ class TestEncoding(XsdValidatorTestCase):
         elem = schema.encode({'@b2': False, '@b1': False})
         self.assertIsNone(elem.text)
         self.assertEqual(elem.attrib, {'b1': 'false', 'b2': 'false', 'b3': 'false'})
+
+    def test_encode_sub_tree(self):
+        """Test encoding data of a non-root element"""
+        data = {
+            "@id": "PAR",
+            "name": "Pierre-Auguste Renoir",
+            "born": "1841-02-25",
+            "dead": "1919-12-03",
+            "qualification": "painter",
+        }
+        elem = self.col_schema.encode(
+            data,
+            path=".//author",
+            namespaces=self.col_namespaces,
+        )
+        self.assertEqual(
+            etree_tostring(elem),
+            dedent(
+                """\
+                <author id="PAR">
+                    <name>Pierre-Auguste Renoir</name>
+                    <born>1841-02-25</born>
+                    <dead>1919-12-03</dead>
+                    <qualification>painter</qualification>
+                </author>"""
+            )
+        )
+
+    @unittest.skipIf(lxml_etree is None, "The lxml library is not available.")
+    def test_lxml_encode(self):
+        """Test encode with etree_element_class=lxml.etree.Element"""
+        xd = {
+            "@xmlns:col": "http://example.com/ns/collection",
+            "@xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance",
+            "@xsi:schemaLocation": "http://example.com/ns/collection collection.xsd",
+            "object": [
+                {
+                    "@id": "b0836217463",
+                    "@available": True,
+                    "position": 2,
+                    "title": None,
+                    "year": "1925",
+                    "author": {
+                        "@id": "JM",
+                        "name": "Joan Miró",
+                        "born": "1893-04-20",
+                        "dead": "1983-12-25",
+                        "qualification": "painter, sculptor and ceramicist",
+                    },
+                },
+            ],
+        }
+
+        elem = self.col_schema.encode(
+            xd,
+            path="./col:collection",
+            namespaces=self.col_namespaces,
+            etree_element_class=lxml_etree.Element,
+        )
+
+        self.assertEqual(
+            etree_tostring(elem, namespaces=self.col_namespaces),
+            dedent(
+                """\
+                <col:collection xmlns:col="http://example.com/ns/collection" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://example.com/ns/collection collection.xsd">
+                    <object id="b0836217463" available="true">
+                        <position>2</position>
+                        <title/>
+                        <year>1925</year>
+                        <author id="JM">
+                            <name>Joan Miró</name>
+                            <born>1893-04-20</born>
+                            <dead>1983-12-25</dead>
+                            <qualification>painter, sculptor and ceramicist</qualification>
+                        </author>
+                    </object>
+                </col:collection>"""
+            )
+        )
 
 
 class TestEncoding11(TestEncoding):

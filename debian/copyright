@@ -48,7 +48,7 @@ Copyright: 2001-2005, International Business Machines Corporation
 License: WSDL
 
 Files: debian/*
-Copyright: 2020, Christian Kastner <ckk@debian.org>
+Copyright: 2020-2022, Christian Kastner <ckk@debian.org>
 License: Expat
 
 License: Expat

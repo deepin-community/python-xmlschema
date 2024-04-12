@@ -11,7 +11,11 @@
 import unittest
 import os
 import io
-import lxml.etree
+
+try:
+    import lxml.etree as lxml_etree
+except ImportError:
+    lxml_etree = None
 
 from xmlschema import XMLSchema, XMLResource
 from xmlschema.etree import ElementTree
@@ -54,18 +58,23 @@ class TestValidatorExceptions(unittest.TestCase):
         self.assertEqual(error.msg, 'unknown error')
 
         error = XMLSchemaValidatorError(xs, 'unknown error', elem=xs.root)
-        lines = str(error).split('\n')
+        output = str(error)
+        lines = output.split('\n')
 
-        self.assertEqual(lines[0], 'unknown error:')
-        self.assertEqual(lines[2], 'Schema:')
-        self.assertTrue(lines[4].strip().startswith('<xs:schema '))
-        self.assertEqual(lines[-2].strip(), '</xs:schema>')
+        self.assertGreater(len(lines), 10, msg=output)
+        self.assertEqual(lines[0], 'unknown error:', msg=output)
+        self.assertEqual(lines[2], 'Schema:', msg=output)
+        self.assertRegex(lines[4].strip(), '^<(xs:)?schema ', msg=output)
+        self.assertRegex(lines[-2].strip(), '</(xs:|xsd:)?schema>$', msg=output)
+
+    @unittest.skipIf(lxml_etree is None, 'lxml is not installed ...')
+    def test_exception_repr_lxml(self):
 
         schema = XMLSchema("""
             <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
                 <xs:element name="root" type="xs:integer"/>
             </xs:schema>""")
-        root = lxml.etree.XML('<root a="10"/>')
+        root = lxml_etree.XML('<root a="10"/>')
 
         with self.assertRaises(XMLSchemaValidationError) as ctx:
             schema.validate(root)
@@ -114,19 +123,21 @@ class TestValidatorExceptions(unittest.TestCase):
         self.assertEqual(ctx.exception.source, resource)
         self.assertEqual(ctx.exception.path, '/root')
 
-    def test_properties(self):
+    @unittest.skipIf(lxml_etree is None, 'lxml is not installed ...')
+    def test_sourceline_property(self):
         schema = XMLSchema("""
             <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
                 <xs:element name="root" type="xs:integer"/>
             </xs:schema>""")
 
-        root = lxml.etree.XML('<root a="10"/>')
+        root = lxml_etree.XML('<root a="10"/>')
         with self.assertRaises(XMLSchemaValidationError) as ctx:
             schema.validate(root)
 
         self.assertEqual(ctx.exception.sourceline, 1)
         self.assertEqual(ctx.exception.root, root)
 
+    def test_other_properties(self):
         xsd_file = os.path.join(CASES_DIR, 'examples/vehicles/vehicles.xsd')
         xs = XMLSchema(xsd_file)
 
@@ -211,7 +222,7 @@ class TestValidatorExceptions(unittest.TestCase):
             schema.validate('<a><b1/></a>')
 
         lines = str(ctx.exception).split('\n')
-        self.assertTrue(lines[2].endswith("Tag b2 expected."))
+        self.assertTrue(lines[2].endswith("Tag 'b2' expected."))
 
 
 if __name__ == '__main__':

@@ -63,7 +63,7 @@ class TestXsdIdentities(XsdValidatorTestCase):
             self.assertEqual(len(errors), 3)
             self.assertEqual(errors[0].message, "missing required attribute 'name'")
         else:
-            self.assertEqual(len(errors), 2)
+            self.assertEqual(len(errors), 3)
             self.assertIn("missing key field '@name'", errors[0].message)
 
     def test_missing_selector(self):
@@ -157,7 +157,8 @@ class TestXsdIdentities(XsdValidatorTestCase):
                 </xs:element>
                 <xs:element name="a" type="xs:string"/>""")
 
-        self.assertEqual(ctx.exception.message, 'selector xpath cannot select attributes')
+        self.assertEqual(ctx.exception.message,
+                         'selector xpath expression can only select elements')
 
     def test_key_validation(self):
         schema = self.check_schema("""

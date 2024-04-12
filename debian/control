@@ -3,17 +3,19 @@ Section: python
 Priority: optional
 Maintainer: Debian Python Team <team+python@tracker.debian.org>
 Uploaders: Christian Kastner <ckk@debian.org>
-Build-Depends: debhelper-compat (= 12),
+Build-Depends: debhelper-compat (= 13),
                dh-python,
                help2man,
                python3-all,
-               python3-elementpath (>= 2.1.2),
+               python3-elementpath (>= 2.5.0),
+               python3-jinja2,
                python3-lxml,
                python3-setuptools,
                python3-sphinx <!nodoc>,
                python3-sphinx-rtd-theme <!nodoc>,
+	       wget,
 Rules-Requires-Root: no
-Standards-Version: 4.5.1
+Standards-Version: 4.6.2
 Homepage: https://github.com/sissaschool/xmlschema
 Vcs-Git: https://salsa.debian.org/python-team/packages/python-xmlschema.git
 Vcs-Browser: https://salsa.debian.org/python-team/packages/python-xmlschema
@@ -34,6 +36,8 @@ Description: implementation of XML Schema for Python
    * Support of XSD validation modes strict/lax/skip
    * Remote attacks protection by default using an XMLParser that forbids
      entities
+   * XML data bindings based on DataElement class
+   * Static code generation with Jinja2 templates
  .
  This package contains the Python 3.x version of xmlschema.
 
@@ -42,6 +46,7 @@ Architecture: all
 Section: doc
 Depends: ${misc:Depends}, ${sphinxdoc:Depends}
 Suggests: python3-xmlschema
+Multi-Arch: foreign
 Description: documentation and examples for xmlschema
  This library includes the following features:
  .
@@ -55,5 +60,7 @@ Description: documentation and examples for xmlschema
    * Support of XSD validation modes strict/lax/skip
    * Remote attacks protection by default using an XMLParser that forbids
      entities
+   * XML data bindings based on DataElement class
+   * Static code generation with Jinja2 templates
  .
  This package contains the documentation for xmlschema.

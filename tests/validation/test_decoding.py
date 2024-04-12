@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python
 #
 # Copyright (c), 2016-2020, SISSA (International School for Advanced Studies).
@@ -10,7 +11,9 @@
 #
 import unittest
 import os
+import json
 from decimal import Decimal
+from collections.abc import MutableMapping, MutableSequence, Set
 import base64
 
 try:
@@ -23,10 +26,11 @@ import xmlschema
 from xmlschema import XMLSchemaValidationError, ParkerConverter, BadgerFishConverter, \
     AbderaConverter, JsonMLConverter, ColumnarConverter
 
+from xmlschema.names import XSD_STRING
 from xmlschema.etree import ElementTree
 from xmlschema.converters import UnorderedConverter
 from xmlschema.validators import XMLSchema11
-from xmlschema.testing import XsdValidatorTestCase
+from xmlschema.testing import XsdValidatorTestCase, etree_elements_assert_equal
 
 VEHICLES_DICT = {
     '@xmlns:vh': 'http://example.com/vehicles',
@@ -326,6 +330,17 @@ DATA_DICT = {
 }
 
 
+def iter_nested_iterables(obj):
+    if not isinstance(obj, (MutableMapping, MutableSequence, Set, tuple)):
+        yield obj
+    else:
+        for item in obj.values() if isinstance(obj, MutableMapping) else obj:
+            if not isinstance(item, (MutableMapping, MutableSequence, Set, tuple)):
+                yield item
+            else:
+                yield from iter_nested_iterables(item)
+
+
 class TestDecoding(XsdValidatorTestCase):
     TEST_CASES_DIR = os.path.join(os.path.dirname(__file__), '../test_cases')
 
@@ -394,7 +409,7 @@ class TestDecoding(XsdValidatorTestCase):
 
     def test_date_decoding(self):
         # Issue #136
-        schema = xmlschema.XMLSchema("""<?xml version="1.0" encoding="utf-8"?>
+        schema = self.schema_class("""<?xml version="1.0" encoding="utf-8"?>
             <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" version="1.0">
                 <xs:element name="Date">
                     <xs:simpleType>
@@ -569,9 +584,51 @@ class TestDecoding(XsdValidatorTestCase):
         xd = self.vh_schema.to_dict(xt, '/vh:vehicles/vh:bikes', namespaces=self.vh_namespaces)
         self.assertEqual(xd['vh:bike'], VEHICLES_DICT['vh:bikes']['vh:bike'])
 
+    def test_max_depth_argument(self):
+        schema = self.schema_class(self.col_xsd_file)
+        self.assertEqual(
+            schema.decode(self.col_xml_file, max_depth=1),
+            {'@xmlns:col': 'http://example.com/ns/collection',
+             '@xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+             '@xsi:schemaLocation': 'http://example.com/ns/collection collection.xsd'})
+
+        xmlschema.limits.MAX_XML_DEPTH = 1
+        with self.assertRaises(XMLSchemaValidationError):
+            schema.decode(self.col_xml_file)
+        xmlschema.limits.MAX_XML_DEPTH = 9999
+
+        self.assertEqual(
+            schema.decode(self.col_xml_file, max_depth=2),
+            {'@xmlns:col': 'http://example.com/ns/collection',
+             '@xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+             '@xsi:schemaLocation': 'http://example.com/ns/collection collection.xsd',
+             'object': [{'@id': 'b0836217462', '@available': True},
+                        {'@id': 'b0836217463', '@available': True}]})
+
+    def test_value_hook_argument(self):
+        schema = self.schema_class(self.col_xsd_file)
+
+        def ascii_strings(value, xsd_type):
+            try:
+                if not isinstance(value, str) or \
+                        xsd_type.primitive_type.name != XSD_STRING:
+                    return value
+            except AttributeError:
+                return value
+            else:
+                return value.encode('utf-8')
+
+        obj = schema.decode(self.col_xml_file, value_hook=ascii_strings)
+        self.assertNotEqual(obj, schema.decode(self.col_xml_file))
+        root = schema.encode(obj)
+        self.assertIsNone(etree_elements_assert_equal(
+            root, ElementTree.parse(self.col_xml_file).getroot(), strict=False
+        ))
+        self.assertEqual(obj['object'][0]['title'], b'The Umbrellas')
+
     def test_non_global_schema_path(self):
         # Issue #157
-        xs = xmlschema.XMLSchema("""<?xml version="1.0" encoding="UTF-8"?>
+        xs = self.schema_class("""<?xml version="1.0" encoding="UTF-8"?>
         <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" 
                 xmlns:foo="http://example.com/foo" 
                 targetNamespace="http://example.com/foo">
@@ -633,6 +690,11 @@ class TestDecoding(XsdValidatorTestCase):
         xs = self.get_schema('<xs:element name="dt" type="xs:date"/>')
         self.assertEqual(xs.decode('<dt>2001-04-15</dt>'), '2001-04-15')
         self.assertEqual(xs.decode('<dt>2001-04-15</dt>', datetime_types=True),
+                         datatypes.Date10.fromstring('2001-04-15'))
+
+        xs = self.get_schema('<xs:attribute name="dt" type="xs:date"/>')
+        self.assertEqual(xs.attributes['dt'].decode('2001-04-15'), '2001-04-15')
+        self.assertEqual(xs.attributes['dt'].decode('2001-04-15', datetime_types=True),
                          datatypes.Date10.fromstring('2001-04-15'))
 
     def test_duration_type(self):
@@ -703,22 +765,66 @@ class TestDecoding(XsdValidatorTestCase):
         xsd_string = self.casepath('issues/issue_022/xsd_string.xsd')
         xml_string_1 = self.casepath('issues/issue_022/xml_string_1.xml')
         xml_string_2 = self.casepath('issues/issue_022/xml_string_2.xml')
-        xsd_schema = xmlschema.XMLSchema(xsd_string)
+        xsd_schema = self.schema_class(xsd_string)
         xml_data_1 = xsd_schema.to_dict(xml_string_1)
         xml_data_2 = xsd_schema.to_dict(xml_string_2)
         self.assertTrue(isinstance(xml_data_1['bar'], type(xml_data_2['bar'])),
                         msg="XSD with an array that return a single element from "
                             "xml must still yield a list.")
 
-    def test_any_type(self):
-        any_type = xmlschema.XMLSchema.meta_schema.types['anyType']
+    def test_any_type_decoding(self):
+        any_type = self.schema_class.meta_schema.types['anyType']
         xml_data_1 = ElementTree.Element('dummy')
         self.assertIsNone(any_type.decode(xml_data_1))
         xml_data_2 = ElementTree.fromstring('<root>\n    <child_1/>\n    <child_2/>\n</root>')
-        self.assertIsNone(any_type.decode(xml_data_2))  # Currently no decoding yet
+
+        # Fix for processContents='lax' (issue 273, previously result was None)
+        self.assertEqual(any_type.decode(xml_data_2), {'child_1': [None], 'child_2': [None]})
+
+    def test_skip_wildcard_decoding(self):
+        schema = self.schema_class("""<?xml version="1.0" encoding="UTF-8"?>
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                <xs:element name="foo">
+                    <xs:complexType>
+                        <xs:sequence>
+                            <xs:any processContents="skip"/>
+                        </xs:sequence>
+                    </xs:complexType>
+                </xs:element>
+            </xs:schema>""")
+
+        self.assertIsNone(schema.decode('<foo><bar/></foo>'))
+
+        obj = schema.decode('<foo><bar/></foo>', process_skipped=True)
+        self.assertEqual(obj, {'bar': None})
+
+        root = schema.encode(obj)
+        self.assertEqual(root.tag, 'foo')
+        self.assertEqual(len(root), 0)
+
+        root = schema.encode(obj, process_skipped=True)
+        self.assertEqual(root.tag, 'foo')
+        self.assertEqual(len(root), 1)
+        self.assertEqual(root[0].tag, 'bar')
+
+    def test_any_type_decoding__issue_273(self):
+        schema = self.schema_class(self.casepath('issues/issue_273/issue_273.xsd'))
+        data = schema.to_dict(self.casepath('issues/issue_273/issue_273.xml'))
+
+        self.assertDictEqual(data, {
+            '@x': 'QA01_sequence',
+            '@y': 2500,
+            'QA01': [
+                {'qa01_elem01': ['13'],
+                 'qa01_elem02': ['5139'],
+                 'qa01_elem03': ['170'],
+                 'qa01_elem04': [{'@these': 'attributes', '@get': 'dropped', '$': '0'}],
+                 'qa01_elem05': ['56'],
+                 'qa01_elem06': ['11141178']
+                 }]})
 
     def test_choice_model_decoding__issue_041(self):
-        schema = xmlschema.XMLSchema(self.casepath('issues/issue_041/issue_041.xsd'))
+        schema = self.schema_class(self.casepath('issues/issue_041/issue_041.xsd'))
         data = schema.to_dict(self.casepath('issues/issue_041/issue_041.xml'))
         self.assertEqual(data, {
             '@xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
@@ -728,7 +834,7 @@ class TestDecoding(XsdValidatorTestCase):
         })
 
     def test_cdata_decoding(self):
-        schema = xmlschema.XMLSchema(self.casepath('issues/issue_046/issue_046.xsd'))
+        schema = self.schema_class(self.casepath('issues/issue_046/issue_046.xsd'))
         xml_file = self.casepath('issues/issue_046/issue_046.xml')
         self.assertEqual(
             schema.decode(xml_file, cdata_prefix='#'),
@@ -754,10 +860,20 @@ class TestDecoding(XsdValidatorTestCase):
         xs = self.get_schema('<xs:element name="hex" type="xs:hexBinary"/>')
 
         obj = xs.decode('<hex> 9AFD </hex>')
-        self.assertEqual(obj, ' 9AFD ')
+        self.assertEqual(obj, '9AFD')  # Value string is collapsed anyway
         self.assertIsInstance(obj, str)
 
         obj = xs.decode('<hex> 9AFD </hex>', binary_types=True)
+        self.assertEqual(obj, '9AFD')
+        self.assertIsInstance(obj, datatypes.HexBinary)
+
+        xs = self.get_schema('<xs:attribute name="hex" type="xs:hexBinary"/>')
+
+        obj = xs.attributes['hex'].decode(' 9AFD ')
+        self.assertEqual(obj, '9AFD')
+        self.assertIsInstance(obj, str)
+
+        obj = xs.attributes['hex'].decode(' 9AFD ', binary_types=True)
         self.assertEqual(obj, '9AFD')
         self.assertIsInstance(obj, datatypes.HexBinary)
 
@@ -769,6 +885,18 @@ class TestDecoding(XsdValidatorTestCase):
         expected_value = datatypes.Base64Binary(base64_value)
         self.check_decode(base64_code_type, base64_value, expected_value)
 
+        # Attribute
+        xs = self.get_schema('<xs:attribute name="b64" type="xs:base64Binary"/>')
+
+        obj = xs.attributes['b64'].decode(base64_value.decode())
+        self.assertEqual(obj, expected_value)
+        self.assertIsInstance(obj, str)
+
+        obj = xs.attributes['b64'].decode(base64_value.decode(), binary_types=True)
+        self.assertEqual(obj, expected_value)
+        self.assertIsInstance(obj, datatypes.Base64Binary)
+
+        # Element
         xs = self.get_schema('<xs:element name="b64" type="xs:base64Binary"/>')
 
         obj = xs.decode('<b64>{}</b64>'.format(base64_value.decode()))
@@ -835,7 +963,7 @@ class TestDecoding(XsdValidatorTestCase):
             </xs:complexType>
         </xs:schema>
         """
-        xsd_schema = xmlschema.XMLSchema(xsd_string)
+        xsd_schema = self.schema_class(xsd_string)
         xml_string_1 = "<foo><bar>0</bar></foo>"
         xml_string_2 = """<?xml version="1.0" encoding="UTF-8"?>
         <foo xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
@@ -848,7 +976,7 @@ class TestDecoding(XsdValidatorTestCase):
         self.check_etree_elements(ElementTree.fromstring(xml_string_2), xsd_schema.encode(obj))
 
     def test_default_namespace__issue_077(self):
-        xs = xmlschema.XMLSchema("""<?xml version="1.0" encoding="UTF-8"?>
+        xs = self.schema_class("""<?xml version="1.0" encoding="UTF-8"?>
         <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" 
             targetNamespace="http://example.com/foo">
           <xs:element name="foo" type="xs:string" />
@@ -951,7 +1079,7 @@ class TestDecoding(XsdValidatorTestCase):
         data = schema.decode(self.casepath('issues/issue_204/issue_204_3.xml'),
                              validation='lax', keep_unknown=True)
         self.assertEqual(set(x for x in data[0] if x[0] != '@'), {'child2', 'unknown', 'child5'})
-        self.assertEqual(data[0]['unknown'], {'a': [{'$': '1'}], 'b': [None]})
+        self.assertEqual(data[0]['unknown'], {'a': ['1'], 'b': [None]})
 
         data = schema.decode(self.casepath('issues/issue_204/issue_204_2.xml'), validation='skip')
         self.assertEqual(set(x for x in data if x[0] != '@'), {'child2', 'child5'})
@@ -959,7 +1087,7 @@ class TestDecoding(XsdValidatorTestCase):
         data = schema.decode(self.casepath('issues/issue_204/issue_204_3.xml'),
                              validation='skip', keep_unknown=True)
         self.assertEqual(set(x for x in data if x[0] != '@'), {'child2', 'unknown', 'child5'})
-        self.assertEqual(data['unknown'], {'a': [{'$': '1'}], 'b': [None]})
+        self.assertEqual(data['unknown'], {'a': ['1'], 'b': [None]})
 
     def test_error_message__issue_115(self):
         schema = self.schema_class(self.casepath('issues/issue_115/Rotation.xsd'))
@@ -1007,13 +1135,13 @@ class TestDecoding(XsdValidatorTestCase):
             </xs:schema>"""
 
         schema = self.schema_class(xsd_text)
-        result = schema.to_dict(
-            """<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+        xml_source = """<root xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
               <ExtensionSub xsi:type="ExtensionType">
                 <Content>my content</Content>
               </ExtensionSub>
             </root>"""
-        )
+
+        result = schema.to_dict(xml_source)
         expected = {
             "@xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance",
             "ExtensionSub": {
@@ -1023,12 +1151,17 @@ class TestDecoding(XsdValidatorTestCase):
         }
         self.assertEqual(result, expected)
 
+        root = schema.to_etree(result)
+        self.assertIsNone(etree_elements_assert_equal(
+            root, ElementTree.XML(xml_source), strict=False
+        ))
+
     def test_issue_190(self):
         # Changed is_single() for XsdElement to check also parent group.
         schema = self.schema_class(self.casepath('issues/issue_190/issue_190.xsd'))
         self.assertEqual(
             schema.to_dict(self.casepath('issues/issue_190/issue_190.xml')),
-            {'a': {'c': [{'$': '1'}]}, 'b': {'c': [{'$': '1'}], 'e': [{'$': '1'}]}}
+            {'a': {'c': ['1']}, 'b': {'c': ['1'], 'e': ['1']}}
         )
 
     def test_issue_200(self):
@@ -1044,6 +1177,31 @@ class TestDecoding(XsdValidatorTestCase):
                            path='/na:main/na:item[@doc_id=2]'),
         self.assertIn('is not an element of the schema', str(ctx.exception))
 
+    def test_issue_238__decode_bytes_strings(self):
+        with open(self.vh_xml_file, 'rb') as fp:
+            vh_xml_data = fp.read()
+
+        self.assertIsInstance(vh_xml_data, bytes)
+
+        obj = self.vh_schema.decode(vh_xml_data)
+
+        # ElementTree accepts also bytes but emits Unicode strings only
+        for value in iter_nested_iterables(obj):
+            self.assertNotIsInstance(value, bytes)
+
+    def test_issue_240__decode_unicode_to_json(self):
+        schema = self.get_schema('<xs:element name="chars" type="xs:string"/>')
+
+        xml_data = '<chars>øæå</chars>'
+        obj = xmlschema.to_dict(xml_data, schema=schema, decimal_type=str)
+        self.assertEqual(obj, 'øæå')
+        self.assertEqual(obj, schema.decode(xml_data, decimal_type=str))
+
+        json_data = json.dumps(obj, indent=4)
+        self.assertEqual(obj, 'øæå')
+        self.assertIsInstance(obj, str)
+        self.assertEqual(json_data.encode("utf-8"), b'"\\u00f8\\u00e6\\u00e5"')
+
 
 class TestDecoding11(TestDecoding):
     schema_class = XMLSchema11
@@ -1057,6 +1215,11 @@ class TestDecoding11(TestDecoding):
         xs = self.get_schema('<xs:element name="dt" type="xs:date"/>')
         self.assertEqual(xs.decode('<dt>2001-04-15</dt>'), '2001-04-15')
         self.assertEqual(xs.decode('<dt>2001-04-15</dt>', datetime_types=True),
+                         datatypes.Date.fromstring('2001-04-15'))
+
+        xs = self.get_schema('<xs:attribute name="dt" type="xs:date"/>')
+        self.assertEqual(xs.attributes['dt'].decode('2001-04-15'), '2001-04-15')
+        self.assertEqual(xs.attributes['dt'].decode('2001-04-15', datetime_types=True),
                          datatypes.Date.fromstring('2001-04-15'))
 
     def test_derived_duration_types(self):

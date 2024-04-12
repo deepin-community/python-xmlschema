@@ -1,0 +1,88 @@
+From: Davide Brunato <brunato@sissa.it>
+Date: Fri, 14 Apr 2023 13:32:14 +0200
+Subject: Refactor _PurePath to not use PurePath internals
+
+- Add attribute _path_module to _PurePath and its
+  subclasses in order to process path normalization
+
+Origin: upstream, https://github.com/sissaschool/xmlschema/commmit/62e317e210e11241cd3460c0a5a4aceb3c663b9a
+---
+ xmlschema/resources.py | 32 ++++++++++++++++++++++----------
+ 1 file changed, 22 insertions(+), 10 deletions(-)
+
+diff --git a/xmlschema/resources.py b/xmlschema/resources.py
+index 684e267..fe985cb 100644
+--- a/xmlschema/resources.py
++++ b/xmlschema/resources.py
+@@ -9,6 +9,8 @@
+ #
+ import copy
+ import os.path
++import ntpath
++import posixpath
+ import platform
+ import re
+ import string
+@@ -89,13 +91,12 @@ class _PurePath(PurePath):
+     A version of pathlib.PurePath adapted for managing the creation
+     from URIs and the simple normalization of paths.
+     """
+-    _from_parts: Any
+-    _flavour: Any
++    _path_module = os.path
+ 
+     def __new__(cls, *args: str) -> '_PurePath':
+         if cls is _PurePath:
+             cls = _PureWindowsPath if os.name == 'nt' else _PurePosixPath
+-        return cast('_PurePath', cls._from_parts(args))
++        return super().__new__(cls, *args)
+ 
+     @classmethod
+     def from_uri(cls, uri: str) -> '_PurePath':
+@@ -142,12 +143,21 @@ class _PurePath(PurePath):
+ 
+     def as_uri(self) -> str:
+         if not self.is_absolute():
+-            uri: str = self._flavour.make_uri(self)
+-            while uri.startswith('file:/'):
+-                uri = uri.replace('file:/', 'file:', 1)
+-            return uri
++            # Converts relative paths to not RFC 8089 compliant relative
++            # file URIs because urlopen() doesn't accept simple paths
++            drive = self.drive
++            if len(drive) == 2 and drive[1] == ':':
++                prefix = 'file:' + drive
++                path = self.as_posix()[2:]
++            elif drive:
++                prefix = 'file:'
++                path = self.as_posix()
++            else:
++                prefix = 'file:'
++                path = str(self)
++            return prefix + quote_from_bytes(os.fsencode(path))
+ 
+-        uri = cast(str, self._flavour.make_uri(self))
++        uri = super().as_uri()
+         if isinstance(self, _PureWindowsPath) and str(self).startswith(r'\\'):
+             # UNC format case: use the format where the host part is included
+             # in the path part, to let urlopen() works.
+@@ -156,15 +166,17 @@ class _PurePath(PurePath):
+         return uri
+ 
+     def normalize(self) -> '_PurePath':
+-        normalized_path = self._flavour.pathmod.normpath(str(self))
+-        return cast('_PurePath', self._from_parts((normalized_path,)))
++        normalized_path = self._path_module.normpath(str(self))
++        return self.__class__(normalized_path)
+ 
+ 
+ class _PurePosixPath(_PurePath, PurePosixPath):
++    _path_module = posixpath
+     __slots__ = ()
+ 
+ 
+ class _PureWindowsPath(_PurePath, PureWindowsPath):
++    _path_module = ntpath
+     __slots__ = ()
+ 
+ 
