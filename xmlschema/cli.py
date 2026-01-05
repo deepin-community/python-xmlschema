@@ -6,7 +6,7 @@
 #
 # @author Davide Brunato <brunato@sissa.it>
 #
-# type: ignore
+# mypy: ignore-errors
 """Command Line Interface"""
 import sys
 import os
@@ -16,20 +16,20 @@ import pathlib
 from urllib.error import URLError
 
 import xmlschema
-from xmlschema import XMLSchema, XMLSchema11, iter_errors, to_json, from_json
+from xmlschema import XMLSchema, XMLSchema11, iter_errors, to_json, from_json, etree_tostring
 from xmlschema.exceptions import XMLSchemaValueError
-from xmlschema.etree import etree_tostring
 
 
 PROGRAM_NAME = os.path.basename(sys.argv[0])
 
 CONVERTERS_MAP = {
-    'Unordered': xmlschema.UnorderedConverter,
-    'Parker': xmlschema.ParkerConverter,
-    'BadgerFish': xmlschema.BadgerFishConverter,
-    'Abdera': xmlschema.AbderaConverter,
-    'JsonML': xmlschema.JsonMLConverter,
-    'Columnar': xmlschema.ColumnarConverter,
+    'unordered': xmlschema.UnorderedConverter,
+    'parker': xmlschema.ParkerConverter,
+    'badgerfish': xmlschema.BadgerFishConverter,
+    'gdata': xmlschema.GDataConverter,
+    'abdera': xmlschema.AbderaConverter,
+    'jsonml': xmlschema.JsonMLConverter,
+    'columnar': xmlschema.ColumnarConverter,
 }
 
 
@@ -57,13 +57,13 @@ def get_loglevel(verbosity):
 
 
 def get_converter(name):
-    if name is None:
-        return
+    if not isinstance(name, str):
+        return None
 
     try:
-        return CONVERTERS_MAP[name]
+        return CONVERTERS_MAP[name.lower()]
     except KeyError:
-        raise ValueError("--converter must be in {!r}".format(tuple(CONVERTERS_MAP)))
+        raise ValueError(f"--converter must be in {tuple(CONVERTERS_MAP)!r}")
 
 
 def xml2json():
@@ -84,6 +84,9 @@ def xml2json():
                         help="use a different XML to JSON convention instead of "
                              "the default converter. Option value can be one of "
                              "{!r}.".format(tuple(CONVERTERS_MAP)))
+    parser.add_argument('--indent', type=int, default=None,
+                        help="indentation for a pretty-printed JSON output "
+                             "(default is the most compact representation)")
     parser.add_argument('--lazy', action='store_true', default=False,
                         help="use lazy decoding mode (slower but use less memory).")
     parser.add_argument('--defuse', metavar='(always, remote, never)',
@@ -106,17 +109,21 @@ def xml2json():
     else:
         schema = None
 
+    json_options = {}
+    if args.indent is not None and args.indent >= 0:
+        json_options['indent'] = args.indent
+
     base_path = pathlib.Path(args.output)
     if not base_path.exists():
         base_path.mkdir()
     elif not base_path.is_dir():
-        raise XMLSchemaValueError("{!r} is not a directory".format(str(base_path)))
+        raise XMLSchemaValueError(f"{str(base_path)!r} is not a directory")
 
     tot_errors = 0
     for xml_path in map(pathlib.Path, args.files):
         json_path = base_path.joinpath(xml_path.name).with_suffix('.json')
         if json_path.exists() and not args.force:
-            print("skip {}: the destination file exists!".format(str(json_path)))
+            print(f"skip {str(json_path)}: the destination file exists!")
             continue
 
         with open(str(json_path), 'w') as fp:
@@ -130,14 +137,15 @@ def xml2json():
                     lazy=args.lazy,
                     defuse=args.defuse,
                     validation='lax',
+                    json_options=json_options,
                 )
             except (xmlschema.XMLSchemaException, URLError) as err:
                 tot_errors += 1
-                print("error with {}: {}".format(str(xml_path), str(err)))
+                print(f"error with {str(xml_path)}: {str(err)}")
                 continue
             else:
                 if not errors:
-                    print("{} converted to {}".format(str(xml_path), str(json_path)))
+                    print(f"{str(xml_path)} converted to {str(json_path)}")
                 else:
                     tot_errors += len(errors)
                     print("{} converted to {} with {} errors".format(
@@ -165,6 +173,8 @@ def json2xml():
                         help="use a different XML to JSON convention instead of "
                              "the default converter. Option value can be one of "
                              "{!r}.".format(tuple(CONVERTERS_MAP)))
+    parser.add_argument('--indent', type=int, default=4,
+                        help="indentation for XML output (default is 4 spaces)")
     parser.add_argument('-o', '--output', type=str, default='.',
                         help="where to write the encoded XML files, current dir by default.")
     parser.add_argument('-f', '--force', action="store_true", default=False,
@@ -183,13 +193,13 @@ def json2xml():
     if not base_path.exists():
         base_path.mkdir()
     elif not base_path.is_dir():
-        raise XMLSchemaValueError("{!r} is not a directory".format(str(base_path)))
+        raise XMLSchemaValueError(f"{str(base_path)!r} is not a directory")
 
     tot_errors = 0
     for json_path in map(pathlib.Path, args.files):
         xml_path = base_path.joinpath(json_path.name).with_suffix('.xml')
         if xml_path.exists() and not args.force:
-            print("skip {}: the destination file exists!".format(str(xml_path)))
+            print(f"skip {str(xml_path)}: the destination file exists!")
             continue
 
         with open(str(json_path)) as fp:
@@ -199,14 +209,15 @@ def json2xml():
                     schema=schema,
                     converter=converter,
                     validation='lax',
+                    indent=args.indent,
                 )
             except (xmlschema.XMLSchemaException, URLError) as err:
                 tot_errors += 1
-                print("error with {}: {}".format(str(xml_path), str(err)))
+                print(f"error with {str(xml_path)}: {str(err)}")
                 continue
             else:
                 if not errors:
-                    print("{} converted to {}".format(str(json_path), str(xml_path)))
+                    print(f"{str(json_path)} converted to {str(xml_path)}")
                 else:
                     tot_errors += len(errors)
                     print("{} converted to {} with {} errors".format(
@@ -251,13 +262,16 @@ def validate():
                                       locations=args.locations, lazy=args.lazy, defuse=args.defuse))
         except (xmlschema.XMLSchemaException, URLError) as err:
             tot_errors += 1
-            print(str(err))
+            sys.stderr.write(f"{err}\n")
             continue
         else:
             if not errors:
-                print("{} is valid".format(filepath))
+                sys.stdout.write(f"{filepath} is valid\n")
             else:
                 tot_errors += len(errors)
-                print("{} is not valid".format(filepath))
+                sys.stderr.write(f"{filepath} is not valid\n")
+                if args.verbosity > 0:
+                    for error in errors:
+                        sys.stderr.write(f"{error}\n")
 
     sys.exit(tot_errors)

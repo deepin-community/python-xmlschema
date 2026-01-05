@@ -10,23 +10,23 @@
 """
 This module contains classes for XML Schema wildcards.
 """
-from typing import cast, Any, Callable, Dict, Iterable, Iterator, List, Optional, \
-    Tuple, Union, Counter
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, \
+    Tuple, Union
+
+from elementpath import SchemaElementNode, build_schema_node_tree
 
 from ..exceptions import XMLSchemaValueError
 from ..names import XSI_NAMESPACE, XSD_ANY, XSD_ANY_ATTRIBUTE, \
     XSD_OPEN_CONTENT, XSD_DEFAULT_OPEN_CONTENT, XSI_TYPE
 from ..aliases import ElementType, SchemaType, SchemaElementType, SchemaAttributeType, \
     ModelGroupType, ModelParticleType, AtomicValueType, IterDecodeType, IterEncodeType, \
-    DecodedValueType, EncodedValueType
+    DecodedValueType, EncodedValueType, OccursCounterType
+from ..translation import gettext as _
 from ..helpers import get_namespace, raw_xml_encode
-from ..xpath import XMLSchemaProtocol, ElementProtocol, XMLSchemaProxy, ElementPathMixin
+from ..xpath import XMLSchemaProxy, ElementPathMixin
 from .xsdbase import ValidationMixin, XsdComponent
 from .particles import ParticleMixin
 from . import elements
-
-
-OccursCounterType = Counter[Union[ModelParticleType, Tuple[ModelParticleType]]]
 
 
 class XsdWildcard(XsdComponent):
@@ -72,7 +72,8 @@ class XsdWildcard(XsdComponent):
                 elif ns == '##targetNamespace':
                     self.namespace.append(self.target_namespace)
                 elif ns.startswith('##'):
-                    self.parse_error("wrong value %r in 'namespace' attribute" % ns)
+                    msg = _("wrong value %r in 'namespace' attribute")
+                    self.parse_error(msg % ns)
                 else:
                     self.namespace.append(ns)
 
@@ -80,8 +81,8 @@ class XsdWildcard(XsdComponent):
         if process_contents == 'strict':
             pass
         elif process_contents not in ('lax', 'skip'):
-            self.parse_error("wrong value %r for 'processContents' "
-                             "attribute" % self.process_contents)
+            msg = _("wrong value %r for 'processContents' attribute")
+            self.parse_error(msg % self.process_contents)
         else:
             self.process_contents = process_contents
 
@@ -89,7 +90,8 @@ class XsdWildcard(XsdComponent):
         if 'notNamespace' not in self.elem.attrib:
             pass
         elif 'namespace' in self.elem.attrib:
-            self.parse_error("'namespace' and 'notNamespace' attributes are mutually exclusive")
+            msg = _("'namespace' and 'notNamespace' attributes are mutually exclusive")
+            self.parse_error(msg)
         else:
             self.namespace = []
             self.not_namespace = []
@@ -99,7 +101,8 @@ class XsdWildcard(XsdComponent):
                 elif ns == '##targetNamespace':
                     self.not_namespace.append(self.target_namespace)
                 elif ns.startswith('##'):
-                    self.parse_error("wrong value %r in 'notNamespace' attribute" % ns)
+                    msg = _("wrong value %r in 'notNamespace' attribute")
+                    self.parse_error(msg % ns)
                 else:
                     self.not_namespace.append(ns)
 
@@ -114,34 +117,41 @@ class XsdWildcard(XsdComponent):
                         for s in not_qname) or \
                 not all(not s.startswith('##') or s in {'##defined', '##definedSibling'}
                         for s in not_qname):
-            self.parse_error("wrong value for 'notQName' attribute")
+            self.parse_error(_("wrong value for 'notQName' attribute"))
             return
 
         try:
             names = [x if x.startswith('##') else self.schema.resolve_qname(x, False)
                      for x in not_qname]
         except KeyError as err:
-            self.parse_error("unmapped QName in 'notQName' attribute: %s" % str(err))
+            msg = _("unmapped QName in 'notQName' attribute: %s")
+            self.parse_error(msg % str(err))
             return
         except ValueError as err:
-            self.parse_error("wrong QName format in 'notQName' attribute: %s" % str(err))
+            msg = _("wrong QName format in 'notQName' attribute: %s")
+            self.parse_error(msg % str(err))
             return
 
         if self.not_namespace:
             if any(not x.startswith('##') for x in names) and \
                     all(get_namespace(x) in self.not_namespace
                         for x in names if not x.startswith('##')):
-                self.parse_error("the namespace of each QName in notQName "
-                                 "is allowed by notNamespace")
+                msg = _("the namespace of each QName in notQName is allowed by notNamespace")
+                self.parse_error(msg)
         elif any(not self.is_namespace_allowed(get_namespace(x))
                  for x in names if not x.startswith('##')):
-            self.parse_error("names in notQName must be in namespaces that are allowed")
+            msg = _("names in notQName must be in namespaces that are allowed")
+            self.parse_error(msg)
 
         self.not_qname = names
 
     @property
     def built(self) -> bool:
         return True
+
+    @property
+    def value_constraint(self) -> Optional[str]:
+        return None
 
     def is_matching(self, name: Optional[str],
                     default_namespace: Optional[str] = None,
@@ -153,8 +163,7 @@ class XsdWildcard(XsdComponent):
         elif not default_namespace:
             return self.is_namespace_allowed('')
         else:
-            return self.is_namespace_allowed('') or \
-                self.is_namespace_allowed(default_namespace)
+            return self.is_namespace_allowed(default_namespace)
 
     def is_namespace_allowed(self, namespace: str) -> bool:
         if self.not_namespace:
@@ -193,12 +202,14 @@ class XsdWildcard(XsdComponent):
 
     def is_restriction(self, other: Union[ModelParticleType, 'XsdAnyAttribute'],
                        check_occurs: bool = True) -> bool:
-        if check_occurs and isinstance(self, ParticleMixin) \
-                and not isinstance(other, XsdAnyAttribute) \
-                and not self.has_occurs_restriction(other):
+        if not isinstance(other, self.__class__):
             return False
-        elif not isinstance(other, self.__class__):
-            return False
+        elif check_occurs and isinstance(self, ParticleMixin):
+            if not isinstance(other, XsdAnyAttribute) and \
+                    not self.has_occurs_restriction(other):
+                return False
+            elif self.max_occurs == 0:
+                return True
 
         other: XsdWildcard  # type: ignore[no-redef]
         if other.process_contents == 'strict' and self.process_contents != 'strict':
@@ -309,7 +320,7 @@ class XsdWildcard(XsdComponent):
         elif '' not in w2.namespace and w1.target_namespace == w2.target_namespace:
             self.namespace = ['##other']
         elif self.xsd_version == '1.0':
-            msg = "not expressible wildcard namespace union: {!r} V {!r}:"
+            msg = _("not expressible wildcard namespace union: {0!r} V {1!r}:")
             raise XMLSchemaValueError(msg.format(other.namespace, self.namespace))
         else:
             self.namespace = []
@@ -395,7 +406,7 @@ class XsdAnyElement(XsdWildcard, ParticleMixin,
 
     def __init__(self, elem: ElementType, schema: SchemaType, parent: XsdComponent) -> None:
         self.precedences = {}
-        super(XsdAnyElement, self).__init__(elem, schema, parent)
+        super().__init__(elem, schema, parent)
 
     def __repr__(self) -> str:
         if self.namespace:
@@ -411,13 +422,23 @@ class XsdAnyElement(XsdWildcard, ParticleMixin,
 
     @property
     def xpath_proxy(self) -> XMLSchemaProxy:
-        return XMLSchemaProxy(
-            schema=cast(XMLSchemaProtocol, self.schema),
-            base_element=cast(ElementProtocol, self)
+        return XMLSchemaProxy(self.schema, self)
+
+    @property
+    def xpath_node(self) -> SchemaElementNode:
+        schema_node = self.schema.xpath_node
+        node = schema_node.get_element_node(self)
+        if isinstance(node, SchemaElementNode):
+            return node
+
+        return build_schema_node_tree(
+            root=self,
+            elements=schema_node.elements,
+            global_elements=schema_node.children,
         )
 
     def _parse(self) -> None:
-        super(XsdAnyElement, self)._parse()
+        super()._parse()
         self._parse_particle(self.elem)
 
     def match(self, name: Optional[str], default_namespace: Optional[str] = None,
@@ -440,7 +461,7 @@ class XsdAnyElement(XsdWildcard, ParticleMixin,
 
         try:
             if name[0] != '{' and default_namespace:
-                return self.maps.lookup_element('{%s}%s' % (default_namespace, name))
+                return self.maps.lookup_element(f'{{{default_namespace}}}{name}')
             else:
                 return self.maps.lookup_element(name)
         except LookupError:
@@ -463,7 +484,7 @@ class XsdAnyElement(XsdWildcard, ParticleMixin,
             -> IterDecodeType[Any]:
 
         if not self.is_matching(obj.tag):
-            reason = "{!r} is not allowed here".format(obj)
+            reason = _("element {!r} is not allowed here").format(obj)
             yield self.validation_error(validation, reason, obj, **kwargs)
 
         if self.process_contents == 'skip':
@@ -471,7 +492,7 @@ class XsdAnyElement(XsdWildcard, ParticleMixin,
                 return
 
         namespace = get_namespace(obj.tag)
-        if not self.maps.load_namespace(namespace):
+        if namespace not in self.maps.namespaces and not self.maps.load_namespace(namespace):
             reason = f"unavailable namespace {namespace!r}"
         else:
             try:
@@ -497,7 +518,11 @@ class XsdAnyElement(XsdWildcard, ParticleMixin,
 
         if validation != 'skip' and self.process_contents == 'strict':
             yield self.validation_error(validation, reason, obj, **kwargs)
-        yield from self.any_type.iter_decode(obj, validation, **kwargs)
+
+        xsd_element = self.maps.validator.create_element(
+            obj.tag, parent=self, form='unqualified'
+        )
+        yield from xsd_element.iter_decode(obj, validation, **kwargs)
 
     def iter_encode(self, obj: Tuple[str, ElementType], validation: str = 'lax', **kwargs: Any) \
             -> IterEncodeType[Any]:
@@ -505,7 +530,7 @@ class XsdAnyElement(XsdWildcard, ParticleMixin,
         namespace = get_namespace(name)
 
         if not self.is_namespace_allowed(namespace):
-            reason = "element {!r} is not allowed here".format(name)
+            reason = _("element {!r} is not allowed here").format(name)
             yield self.validation_error(validation, reason, value, **kwargs)
 
         if self.process_contents == 'skip':
@@ -523,7 +548,7 @@ class XsdAnyElement(XsdWildcard, ParticleMixin,
                 yield from xsd_element.iter_encode(value, validation, **kwargs)
                 return
 
-        # Check if there is an xsi:type attribute, but it has to extract
+        # Check if there is a xsi:type attribute, but it has to extract
         # attributes using the converter instance.
         if self.process_contents == 'strict':
             xsd_element = self.maps.validator.create_element(
@@ -537,21 +562,26 @@ class XsdAnyElement(XsdWildcard, ParticleMixin,
         try:
             converter = kwargs['converter']
         except KeyError:
-            converter = kwargs['converter'] = self.schema.get_converter(**kwargs)
+            converter = self._get_converter(value, kwargs)
 
         try:
             level = kwargs['level']
         except KeyError:
-            element_data = converter.element_encode(value, xsd_element)
-        else:
-            element_data = converter.element_encode(value, xsd_element, level)
+            level = kwargs['level'] = 0
 
-        if XSI_TYPE in element_data.attributes:
-            yield from xsd_element.iter_encode(value, validation, **kwargs)
-            return
+        try:
+            element_data = converter.element_encode(value, xsd_element, level)
+        except (ValueError, TypeError) as err:
+            if validation != 'skip' and self.process_contents == 'strict':
+                yield self.validation_error(validation, err, value, **kwargs)
+        else:
+            if XSI_TYPE in element_data.attributes:
+                yield from xsd_element.iter_encode(value, validation, **kwargs)
+                return
 
         if validation != 'skip' and self.process_contents == 'strict':
             yield self.validation_error(validation, reason, **kwargs)
+
         yield from self.any_type.iter_encode(obj, validation, **kwargs)
 
     def is_overlap(self, other: ModelParticleType) -> bool:
@@ -630,7 +660,7 @@ class XsdAnyAttribute(XsdWildcard, ValidationMixin[Tuple[str, str], DecodedValue
 
         try:
             if name[0] != '{' and default_namespace:
-                return self.maps.lookup_attribute('{%s}%s' % (default_namespace, name))
+                return self.maps.lookup_attribute(f'{{{default_namespace}}}{name}')
             else:
                 return self.maps.lookup_attribute(name)
         except LookupError:
@@ -641,7 +671,7 @@ class XsdAnyAttribute(XsdWildcard, ValidationMixin[Tuple[str, str], DecodedValue
         name, value = obj
 
         if not self.is_matching(name):
-            reason = "attribute %r not allowed." % name
+            reason = _("attribute %r not allowed") % name
             yield self.validation_error(validation, reason, obj, **kwargs)
 
         if self.process_contents == 'skip':
@@ -653,14 +683,14 @@ class XsdAnyAttribute(XsdWildcard, ValidationMixin[Tuple[str, str], DecodedValue
                 xsd_attribute = self.maps.lookup_attribute(name)
             except LookupError:
                 if validation != 'skip' and self.process_contents == 'strict':
-                    reason = "attribute %r not found." % name
+                    reason = _("attribute %r not found") % name
                     yield self.validation_error(validation, reason, obj, **kwargs)
             else:
                 yield from xsd_attribute.iter_decode(value, validation, **kwargs)
                 return
 
         elif validation != 'skip' and self.process_contents == 'strict':
-            reason = "unavailable namespace {!r}".format(get_namespace(name))
+            reason = _("unavailable namespace {!r}").format(get_namespace(name))
             yield self.validation_error(validation, reason, **kwargs)
 
         yield value
@@ -671,7 +701,7 @@ class XsdAnyAttribute(XsdWildcard, ValidationMixin[Tuple[str, str], DecodedValue
         namespace = get_namespace(name)
 
         if not self.is_namespace_allowed(namespace):
-            reason = "attribute %r not allowed." % name
+            reason = _("attribute %r not allowed") % name
             yield self.validation_error(validation, reason, obj, **kwargs)
 
         if self.process_contents == 'skip':
@@ -683,14 +713,14 @@ class XsdAnyAttribute(XsdWildcard, ValidationMixin[Tuple[str, str], DecodedValue
                 xsd_attribute = self.maps.lookup_attribute(name)
             except LookupError:
                 if validation != 'skip' and self.process_contents == 'strict':
-                    reason = "attribute %r not found." % name
+                    reason = _("attribute %r not found") % name
                     yield self.validation_error(validation, reason, obj, **kwargs)
             else:
                 yield from xsd_attribute.iter_encode(value, validation, **kwargs)
                 return
 
         elif validation != 'skip' and self.process_contents == 'strict':
-            reason = "unavailable namespace {!r}".format(get_namespace(name))
+            reason = _("unavailable namespace {!r}").format(get_namespace(name))
             yield self.validation_error(validation, reason, **kwargs)
 
         yield raw_xml_encode(value)
@@ -713,7 +743,7 @@ class Xsd11AnyElement(XsdAnyElement):
         </any>
     """
     def _parse(self) -> None:
-        super(Xsd11AnyElement, self)._parse()
+        super()._parse()
         self._parse_not_constraints()
 
     def is_matching(self, name: Optional[str],
@@ -723,10 +753,10 @@ class Xsd11AnyElement(XsdAnyElement):
                     **kwargs: Any) -> bool:
         """
         Returns `True` if the component name is matching the name provided as argument,
-        `False` otherwise. For XSD elements the matching is extended to substitutes.
+        `False` otherwise.
 
         :param name: a local or fully-qualified name.
-        :param default_namespace: used if it's not None and not empty for completing \
+        :param default_namespace: used by the XPath processor for completing \
         the name argument in case it's a local name.
         :param group: used only by XSD 1.1 any element wildcards to verify siblings in \
         case of ##definedSibling value in notQName attribute.
@@ -741,16 +771,15 @@ class Xsd11AnyElement(XsdAnyElement):
             if not self.is_namespace_allowed(''):
                 return False
         else:
-            name = '{%s}%s' % (default_namespace, name)
-            if not self.is_namespace_allowed('') \
-                    and not self.is_namespace_allowed(default_namespace):
+            name = f'{{{default_namespace}}}{name}'
+            if not self.is_namespace_allowed(default_namespace):
                 return False
 
         if group in self.precedences:
             if occurs is None:
                 if any(e.is_matching(name) for e in self.precedences[group]):
                     return False
-            elif any(e.is_matching(name) and not e.is_over(occurs[e])
+            elif any(e.is_matching(name) and not e.is_over(occurs)
                      for e in self.precedences[group]):
                 return False
 
@@ -791,7 +820,7 @@ class Xsd11AnyAttribute(XsdAnyAttribute):
         </anyAttribute>
     """
     def _parse(self) -> None:
-        super(Xsd11AnyAttribute, self)._parse()
+        super()._parse()
         self._parse_not_constraints()
 
     def is_matching(self, name: Optional[str],
@@ -804,7 +833,7 @@ class Xsd11AnyAttribute(XsdAnyAttribute):
         elif not default_namespace:
             namespace = ''
         else:
-            name = '{%s}%s' % (default_namespace, name)
+            name = f'{{{default_namespace}}}{name}'
             namespace = default_namespace
 
         if '##defined' in self.not_qname and name in self.maps.attributes:
@@ -834,33 +863,32 @@ class XsdOpenContent(XsdComponent):
     any_element = None  # type: Xsd11AnyElement
 
     def __init__(self, elem: ElementType, schema: SchemaType, parent: XsdComponent) -> None:
-        super(XsdOpenContent, self).__init__(elem, schema, parent)
+        super().__init__(elem, schema, parent)
 
     def __repr__(self) -> str:
         return '%s(mode=%r)' % (self.__class__.__name__, self.mode)
 
     def _parse(self) -> None:
-        super(XsdOpenContent, self)._parse()
+        super()._parse()
         try:
             self.mode = self.elem.attrib['mode']
         except KeyError:
             pass
         else:
-            if self.mode not in {'none', 'interleave', 'suffix'}:
-                self.parse_error("wrong value %r for 'mode' attribute." % self.mode)
+            if self.mode not in ('none', 'interleave', 'suffix'):
+                msg = _("wrong value %r for 'mode' attribute")
+                self.parse_error(msg % self.mode)
 
         child = self._parse_child_component(self.elem)
         if self.mode == 'none':
             if child is not None and child.tag == XSD_ANY:
-                self.parse_error("an openContent with mode='none' must not "
-                                 "have an <xs:any> child declaration")
+                msg = _("an openContent with mode='none' cannot "
+                        "have an <xs:any> child declaration")
+                self.parse_error(msg)
         elif child is None or child.tag != XSD_ANY:
-            self.parse_error("an <xs:any> child declaration is required")
+            self.parse_error(_("an <xs:any> child declaration is required"))
         else:
-            any_element = Xsd11AnyElement(child, self.schema, self)
-            any_element.min_occurs = 0
-            any_element.max_occurs = None
-            self.any_element = any_element
+            self.any_element = Xsd11AnyElement(child, self.schema, self)
 
     @property
     def built(self) -> bool:
@@ -894,14 +922,17 @@ class XsdDefaultOpenContent(XsdOpenContent):
         super(XsdOpenContent, self).__init__(elem, schema)
 
     def _parse(self) -> None:
-        super(XsdDefaultOpenContent, self)._parse()
+        super()._parse()
         if self.parent is not None:
-            self.parse_error("defaultOpenContent must be a child of the schema")
+            msg = _("defaultOpenContent must be a child of the schema")
+            self.parse_error(msg)
         if self.mode == 'none':
-            self.parse_error("the attribute 'mode' of a defaultOpenContent cannot be 'none'")
+            msg = _("the attribute 'mode' of a defaultOpenContent cannot be 'none'")
+            self.parse_error(msg)
         if self._parse_child_component(self.elem) is None:
-            self.parse_error("a defaultOpenContent declaration cannot be empty")
+            msg = _("a defaultOpenContent declaration cannot be empty")
+            self.parse_error(msg)
 
         if 'appliesToEmpty' in self.elem.attrib:
-            if self.elem.attrib['appliesToEmpty'].strip() in {'true', '1'}:
+            if self.elem.attrib['appliesToEmpty'].strip() in ('true', '1'):
                 self.applies_to_empty = True

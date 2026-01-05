@@ -3,7 +3,7 @@
 Original example #3 from WSDL 1.1 definition with SOAP 1.1 bindings:
   href: https://www.w3.org/TR/2001/NOTE-wsdl-20010315#_soap-e
 
-Thi version contains a typo in <binding> definition
+This case contains a typo in <binding> definition
 -->
 <definitions name="StockQuote"
           targetNamespace="http://example.com/stockquote.wsdl"

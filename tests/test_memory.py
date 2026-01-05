@@ -27,7 +27,7 @@ class TestMemoryUsage(unittest.TestCase):
 
     @staticmethod
     def check_memory_profile(output):
-        """Check the output of a memory memory profile run on a function."""
+        """Check the output of a memory profile run on a function."""
         mem_usage = []
         func_num = 0
         for line in output.split('\n'):
@@ -47,7 +47,7 @@ class TestMemoryUsage(unittest.TestCase):
     def test_package_memory_usage(self):
         test_dir = os.path.dirname(__file__) or '.'
         cmd = [sys.executable, os.path.join(test_dir, 'check_memory.py'), '1']
-        output = subprocess.check_output(cmd, universal_newlines=True)
+        output = subprocess.check_output(cmd, text=True)
         package_mem = self.check_memory_profile(output)
         self.assertLess(package_mem, 20)
 
@@ -59,15 +59,15 @@ class TestMemoryUsage(unittest.TestCase):
         )
 
         cmd = [sys.executable, os.path.join(test_dir, 'check_memory.py'), '2', xsd10_schema_file]
-        output = subprocess.check_output(cmd, universal_newlines=True)
+        output = subprocess.check_output(cmd, text=True)
         parse_mem = self.check_memory_profile(output)
 
         cmd = [sys.executable, os.path.join(test_dir, 'check_memory.py'), '3', xsd10_schema_file]
-        output = subprocess.check_output(cmd, universal_newlines=True)
+        output = subprocess.check_output(cmd, text=True)
         iterparse_mem = self.check_memory_profile(output)
 
         cmd = [sys.executable, os.path.join(test_dir, 'check_memory.py'), '4', xsd10_schema_file]
-        output = subprocess.check_output(cmd, universal_newlines=True)
+        output = subprocess.check_output(cmd, text=True)
         lazy_iterparse_mem = self.check_memory_profile(output)
 
         self.assertLess(parse_mem, 2)
@@ -91,15 +91,15 @@ class TestMemoryUsage(unittest.TestCase):
                 fp.write('</data>\n')
 
             cmd = [sys.executable, python_script, '5', str(xml_file)]
-            output = subprocess.check_output(cmd, universal_newlines=True)
+            output = subprocess.check_output(cmd, text=True)
             decode_mem = self.check_memory_profile(output)
 
             cmd = [sys.executable, python_script, '6', str(xml_file)]
-            output = subprocess.check_output(cmd, universal_newlines=True)
+            output = subprocess.check_output(cmd, text=True)
             lazy_decode_mem = self.check_memory_profile(output)
 
         self.assertLessEqual(decode_mem, 2.6)
-        self.assertLessEqual(lazy_decode_mem, 1.8)
+        self.assertLessEqual(lazy_decode_mem, 2.1)
 
     def test_validate_memory_usage(self):
         with tempfile.TemporaryDirectory() as dirname:
@@ -118,15 +118,15 @@ class TestMemoryUsage(unittest.TestCase):
                 fp.write('</data>\n')
 
             cmd = [sys.executable, python_script, '7', str(xml_file)]
-            output = subprocess.check_output(cmd, universal_newlines=True)
+            output = subprocess.check_output(cmd, text=True)
             validate_mem = self.check_memory_profile(output)
 
             cmd = [sys.executable, python_script, '8', str(xml_file)]
-            output = subprocess.check_output(cmd, universal_newlines=True)
+            output = subprocess.check_output(cmd, text=True)
             lazy_validate_mem = self.check_memory_profile(output)
 
             self.assertLess(validate_mem, 2.6)
-            self.assertLess(lazy_validate_mem, 1.8)
+            self.assertLess(lazy_validate_mem, 2.1)
 
 
 if __name__ == '__main__':

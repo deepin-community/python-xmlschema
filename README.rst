@@ -13,13 +13,11 @@ xmlschema
    :target: https://lbesson.mit-license.org/
 .. image:: https://img.shields.io/pypi/dm/xmlschema.svg
    :target: https://pypi.python.org/pypi/xmlschema/
-.. image:: https://img.shields.io/badge/Maintained%3F-yes-green.svg
-   :target: https://GitHub.com/Naereen/StrapDown.js/graphs/commit-activity
 
 .. xmlschema-introduction-start
 
 The *xmlschema* library is an implementation of `XML Schema <http://www.w3.org/2001/XMLSchema>`_
-for Python (supports Python 3.7+).
+for Python (supports Python 3.8+).
 
 This library arises from the needs of a solid Python layer for processing XML
 Schema based files for
@@ -50,6 +48,7 @@ This library includes the following features:
 * Support of XSD validation modes *strict*/*lax*/*skip*
 * XML attacks protection using an XMLParser that forbids entities
 * Access control on resources addressed by an URL or filesystem path
+* Downloading XSD files from a remote URL and storing them for offline use
 * XML data bindings based on DataElement class
 * Static code generation with Jinja2 templates
 
@@ -57,7 +56,7 @@ This library includes the following features:
 Installation
 ============
 
-You can install the library with *pip* in a Python 3.6+ environment::
+You can install the library with *pip* in a Python 3.7+ environment::
 
     pip install xmlschema
 

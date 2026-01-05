@@ -9,14 +9,17 @@
 # @author Davide Brunato <brunato@sissa.it>
 #
 import unittest
+import os
+import xml.etree.ElementTree as ElementTree
 
 from xmlschema import XMLSchemaParseError, XMLSchemaValidationError
 from xmlschema.validators import XMLSchema11
-from xmlschema.validators.identities import IdentityCounter, KeyrefCounter
+from xmlschema.validators.identities import IdentityCounter, KeyrefCounter, FieldValueSelector
 from xmlschema.testing import XsdValidatorTestCase
 
 
 class TestXsdIdentities(XsdValidatorTestCase):
+    TEST_CASES_DIR = os.path.join(os.path.dirname(__file__), '../test_cases')
 
     def test_key_definition(self):
         schema = self.check_schema("""
@@ -122,23 +125,7 @@ class TestXsdIdentities(XsdValidatorTestCase):
                     </xs:key>
                 </xs:element>""")
 
-        self.assertIn("a QName cannot contains spaces", ctx.exception.message)
-
-    def test_selector_target_namespace(self):
-        schema = self.check_schema("""
-            <xs:element name="primary_key" type="xs:string">
-              <xs:key name="key1">
-                <xs:selector xpath="xs:*"/>
-                <xs:field xpath="."/>
-                <xs:field xpath="@xs:*"/>
-              </xs:key>
-            </xs:element>""")
-
-        self.assertEqual(schema.identities['key1'].selector.target_namespace,
-                         'http://www.w3.org/2001/XMLSchema')
-        self.assertEqual(schema.identities['key1'].fields[0].target_namespace, '')
-        self.assertEqual(schema.identities['key1'].fields[1].target_namespace,
-                         'http://www.w3.org/2001/XMLSchema')
+        self.assertIn("XPST0003", ctx.exception.message)
 
     def test_invalid_selector_node(self):
         with self.assertRaises(XMLSchemaParseError) as ctx:
@@ -322,7 +309,12 @@ class TestXsdIdentities(XsdValidatorTestCase):
                 </xs:complexType>
             </xs:element>""")
 
-        self.assertEqual(schema.identities['key1'].elements, {schema.elements['a']: None})
+        self.assertIn(schema.elements['a'], schema.identities['key1'].elements)
+        self.assertEqual(len(schema.identities['key1'].elements), 1)
+        self.assertTrue(all(
+            isinstance(x, FieldValueSelector)
+            for x in schema.identities['key1'].elements[schema.elements['a']]
+        ))
 
     def test_identity_counter(self):
         schema = self.check_schema("""
@@ -333,7 +325,8 @@ class TestXsdIdentities(XsdValidatorTestCase):
               </xs:key>
             </xs:element>""")
 
-        counter = IdentityCounter(schema.identities['key1'])
+        elem = ElementTree.XML('<primary_key>3</primary_key>')
+        counter = IdentityCounter(schema.identities['key1'], elem)
         self.assertEqual(repr(counter), 'IdentityCounter()')
         self.assertIsNone(counter.increase(('1',)))
         self.assertIsNone(counter.increase(('2',)))
@@ -359,7 +352,8 @@ class TestXsdIdentities(XsdValidatorTestCase):
               </xs:keyref>
             </xs:element>""")
 
-        counter = KeyrefCounter(schema.identities['keyref1'])
+        elem = ElementTree.XML('<primary_key>3</primary_key>')
+        counter = KeyrefCounter(schema.identities['keyref1'], elem)
         self.assertIsNone(counter.increase(('1',)))
         self.assertIsNone(counter.increase(('2',)))
         self.assertIsNone(counter.increase(('1',)))
@@ -370,7 +364,7 @@ class TestXsdIdentities(XsdValidatorTestCase):
         with self.assertRaises(KeyError):
             list(counter.iter_errors(identities={}))
 
-        key_counter = IdentityCounter(schema.identities['key1'])
+        key_counter = IdentityCounter(schema.identities['key1'], elem)
         self.assertIsNone(key_counter.increase(('1',)))
         self.assertIsNone(key_counter.increase('4'))
 
@@ -380,6 +374,18 @@ class TestXsdIdentities(XsdValidatorTestCase):
         self.assertIn("value ('2',) not found", str(errors[0]))
         self.assertIn("value ('3',) not found", str(errors[1]))
         self.assertIn("(2 times)", str(errors[1]))
+
+    def test_key_multiple_values__issue_418(self):
+        xsd_file = self.casepath('issues/issue_418/issue_418.xsd')
+        schema = self.schema_class(xsd_file)
+
+        xml_file = self.casepath('issues/issue_418/issue_418.xml')
+        self.assertIsNone(schema.validate(xml_file))
+
+        xml_file = self.casepath('issues/issue_418/issue_418-invalid.xml')
+        with self.assertRaises(XMLSchemaValidationError) as ctx:
+            schema.validate(xml_file)
+        self.assertIn("field selects multiple values", str(ctx.exception))
 
 
 class TestXsd11Identities(TestXsdIdentities):
@@ -399,8 +405,8 @@ class TestXsd11Identities(TestXsdIdentities):
             </xs:element>""")
 
         key1 = schema.identities['key1']
-        self.assertIsNot(schema.elements['secondary_key'].identities['key1'], key1)
-        self.assertIs(schema.elements['secondary_key'].identities['key1'].ref, key1)
+        self.assertIsNot(schema.elements['secondary_key'].identities[0], key1)
+        self.assertIs(schema.elements['secondary_key'].identities[0].ref, key1)
 
     def test_missing_key_reference_definition(self):
         schema = self.check_schema("""
@@ -445,16 +451,16 @@ class TestXsd11Identities(TestXsdIdentities):
               <xs:keyref name="keyref1" refer="key1">
                 <xs:selector xpath="."/>
                 <xs:field xpath="."/>
-              </xs:keyref>              
+              </xs:keyref>
             </xs:element>
             <xs:element name="secondary_key" type="xs:string">
               <xs:keyref ref="keyref1"/>
             </xs:element>""")
 
-        self.assertIsNot(schema.elements['secondary_key'].identities['keyref1'],
-                         schema.elements['primary_key'].identities['keyref1'])
-        self.assertIs(schema.elements['secondary_key'].identities['keyref1'].ref,
-                      schema.elements['primary_key'].identities['keyref1'])
+        self.assertIsNot(schema.elements['secondary_key'].identities[0],
+                         schema.elements['primary_key'].identities[-1])
+        self.assertIs(schema.elements['secondary_key'].identities[0].ref,
+                      schema.elements['primary_key'].identities[-1])
 
     def test_selector_default_namespace(self):
         schema = self.check_schema("""

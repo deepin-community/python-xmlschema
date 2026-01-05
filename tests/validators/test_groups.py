@@ -9,12 +9,12 @@
 # @author Davide Brunato <brunato@sissa.it>
 #
 import unittest
+from textwrap import dedent
 from typing import Any, Union, List, Optional
 
-from xmlschema import XMLSchemaModelError, XMLSchemaModelDepthError
+from xmlschema import XMLSchema, XMLSchemaModelError, XMLSchemaModelDepthError
 from xmlschema.exceptions import XMLSchemaValueError
-from xmlschema.validators.particles import ParticleMixin
-from xmlschema.validators.groups import XsdGroup
+from xmlschema.validators import ParticleMixin, XsdGroup, XsdElement
 
 
 class ModelGroup(XsdGroup):
@@ -23,12 +23,17 @@ class ModelGroup(XsdGroup):
     def __init__(self, model: str, min_occurs: int = 1, max_occurs: Optional[int] = 1) -> None:
         ParticleMixin.__init__(self, min_occurs, max_occurs)
         if model not in {'sequence', 'choice', 'all'}:
-            raise XMLSchemaValueError("invalid model {!r} for a group".format(model))
+            raise XMLSchemaValueError(f"invalid model {model!r} for a group")
         self._group: List[Union[ParticleMixin, 'ModelGroup']] = []
+        self.content = self._group
         self.model: str = model
 
     def __repr__(self) -> str:
         return '%s(model=%r, occurs=%r)' % (self.__class__.__name__, self.model, self.occurs)
+
+    @property
+    def xsd_version(self) -> str:
+        return '1.0'
 
     append: Any
 
@@ -335,6 +340,99 @@ class TestXsdGroups(unittest.TestCase):
         self.assertEqual(root_group.overall_max_occurs(group), 6)
         root_group[1].max_occurs = None
         self.assertIsNone(root_group.overall_max_occurs(group))
+
+    def test_model_group_composition_in_a_sequence__issue_384(self):
+        schema = XMLSchema(dedent("""\
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                <xs:element name="root" type="type1"/>
+                <xs:complexType name="type1">
+                    <xs:sequence>
+                      <xs:element name="elem1" type="xs:string"/>
+                      <xs:group ref="group1"/>
+                    </xs:sequence>
+                </xs:complexType>
+                <xs:group name="group1">
+                    <xs:choice>
+                      <xs:element name="elem2" type="xs:string"/>
+                      <xs:element name="elem3" type="xs:string"/>
+                    </xs:choice>
+                </xs:group>
+            </xs:schema>"""))
+
+        xsd_type = schema.types['type1']
+        self.assertIsInstance(xsd_type.content, XsdGroup)
+        self.assertEqual(xsd_type.content.model, 'sequence')
+        self.assertEqual(len(xsd_type.content), 2)
+        self.assertEqual(xsd_type.content[0].name, 'elem1')
+        self.assertIsInstance(xsd_type.content[0], XsdElement)
+        self.assertIsInstance(xsd_type.content[1], XsdGroup)
+        self.assertEqual(xsd_type.content[1].model, 'choice')
+
+        xsd_group = schema.groups['group1']
+        self.assertEqual(xsd_group.model, 'choice')
+        self.assertIs(xsd_type.content[1].ref, xsd_group)
+        self.assertEqual(len(xsd_group), 2)
+        self.assertEqual(xsd_group[0].name, 'elem2')
+        self.assertIsInstance(xsd_group[0], XsdElement)
+        self.assertEqual(xsd_group[1].name, 'elem3')
+        self.assertIsInstance(xsd_group[1], XsdElement)
+
+        self.assertTrue(schema.is_valid('<root><elem1>a</elem1><elem2>b</elem2></root>'))
+        self.assertTrue(schema.is_valid('<root><elem1>a</elem1><elem3>c</elem3></root>'))
+
+        self.assertFalse(schema.is_valid('<root><elem1>a</elem1></root>'))
+        self.assertFalse(schema.is_valid('<root><elem2>b</elem2></root>'))
+        self.assertFalse(schema.is_valid('<root><elem3>c</elem3></root>'))
+
+        self.assertFalse(schema.is_valid(
+            '<root><elem1>a</elem1><elem2>b</elem2><elem3>c</elem3></root>'
+        ))
+        self.assertFalse(schema.is_valid(
+            '<root><elem1>a</elem1><elem3>c</elem3><elem2>b</elem2></root>'
+        ))
+
+    def test_is_optional__issue_410(self):
+        schema = XMLSchema(dedent("""\
+            <?xml version="1.0" encoding="UTF-8"?>
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+              <xs:element name="muclient">
+                <xs:complexType>
+                  <xs:choice minOccurs="0" maxOccurs="unbounded">
+                    <xs:element name="include"/>
+                    <xs:choice>
+                      <xs:element name="plugin"/>
+                      <xs:element name="world"/>
+                      <xs:element name="triggers"/>
+                      <xs:element name="aliases"/>
+                      <xs:element name="timers"/>
+                      <xs:element name="macros"/>
+                      <xs:element name="variables"/>
+                      <xs:element name="colours"/>
+                      <xs:element name="keypad"/>
+                      <xs:element name="printing"/>
+                    </xs:choice>
+                  </xs:choice>
+                </xs:complexType>
+              </xs:element>
+            </xs:schema>"""))
+
+        group = schema.elements['muclient'].type.content
+
+        self.assertRaises(ValueError, group.is_optional, schema.elements['muclient'])
+
+        self.assertTrue(group.is_optional(group[0]))
+        for xsd_element in group[1]:
+            self.assertTrue(group.is_optional(xsd_element))
+
+        group.min_occurs = 1
+        self.assertTrue(group.is_optional(group[0]))
+        for xsd_element in group[1]:
+            self.assertTrue(group.is_optional(xsd_element))
+
+        group.model = 'sequence'
+        self.assertFalse(group.is_optional(group[0]))
+        for xsd_element in group[1]:
+            self.assertTrue(group.is_optional(xsd_element))
 
 
 if __name__ == '__main__':

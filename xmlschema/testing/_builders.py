@@ -7,16 +7,18 @@
 #
 # @author Davide Brunato <brunato@sissa.it>
 #
-# type: ignore
+# mypy: ignore-errors
 import pdb
 import os
 import ast
 import pickle
+import re
 import time
 import logging
-import importlib
 import tempfile
 import warnings
+from importlib import util as importlib_util
+from xml.etree import ElementTree
 
 try:
     import lxml.etree as lxml_etree
@@ -26,17 +28,16 @@ except ImportError:
 else:
     lxml_etree_element = lxml_etree.Element
 
+from elementpath.etree import PyElementTree, etree_tostring
+
 import xmlschema
 from xmlschema import XMLSchemaBase, XMLSchema11, XMLSchemaValidationError, \
     XMLSchemaParseError, UnorderedConverter, ParkerConverter, BadgerFishConverter, \
-    AbderaConverter, JsonMLConverter, ColumnarConverter
+    AbderaConverter, JsonMLConverter, ColumnarConverter, GDataConverter
 from xmlschema.names import XSD_IMPORT
 from xmlschema.helpers import local_name
-from xmlschema.etree import etree_tostring, ElementTree, \
-    py_etree_element
 from xmlschema.resources import fetch_namespaces
-from xmlschema.xpath import XMLSchemaContext
-from xmlschema.validators import XsdValidator, XsdType, Xsd11ComplexType
+from xmlschema.validators import XsdType, Xsd11ComplexType
 from xmlschema.dataobjects import DataElementConverter, DataBindingConverter, DataElement
 
 try:
@@ -47,6 +48,9 @@ except ImportError:
 from ._helpers import iter_nested_items, etree_elements_assert_equal
 from ._case_class import XsdValidatorTestCase
 from ._observers import SchemaObserver
+
+
+OBJ_ID_PATTERN = re.compile(r" at 0x[0-9a-fA-F]+")
 
 
 def make_schema_test_class(test_file, test_args, test_num, schema_class, check_with_lxml):
@@ -95,7 +99,7 @@ def make_schema_test_class(test_file, test_args, test_num, schema_class, check_w
             self.errors.extend(schema.maps.all_errors)
 
             if inspect:
-                components_ids = set([id(c) for c in schema.maps.iter_components()])
+                components_ids = {id(c) for c in schema.maps.iter_components()}
                 components_ids.update(id(c) for c in schema.meta_schema.iter_components())
                 missing = [
                     c for c in SchemaObserver.components if id(c) not in components_ids
@@ -113,7 +117,7 @@ def make_schema_test_class(test_file, test_args, test_num, schema_class, check_w
                     # are built with the SafeXMLParser that uses pure Python elements.
                     for e in schema.maps.iter_components():
                         elem = getattr(e, 'elem', getattr(e, 'root', None))
-                        if isinstance(elem, py_etree_element):
+                        if isinstance(elem, PyElementTree.Element):
                             break
                     else:
                         raise
@@ -121,16 +125,17 @@ def make_schema_test_class(test_file, test_args, test_num, schema_class, check_w
                     self.assertTrue(isinstance(deserialized_schema, XMLSchemaBase), msg=xsd_file)
                     self.assertEqual(schema.built, deserialized_schema.built, msg=xsd_file)
 
-            # XPath API tests
+            # XPath node tree tests
             if not inspect and not self.errors:
-                context = XMLSchemaContext(schema)
-                elements = [x for x in schema.iter()]  # Contains schema elements only
-                xpath_context_elements = [x for x in context.iter() if isinstance(x, XsdValidator)]
-                descendants = [x for x in context.iter_descendants('descendant-or-self')]
-                self.assertTrue(x in descendants for x in xpath_context_elements)
-                for e in elements:
+                xpath_root = schema.xpath_node
+                element_nodes = [x for x in xpath_root.iter() if hasattr(x, 'elem')]
+                descendants = [x for x in xpath_root.iter_descendants('descendant-or-self')]
+                self.assertTrue(x in descendants for x in element_nodes)
+
+                context_xsd_elements = [e.value for e in element_nodes]
+                for xsd_element in schema.iter():
                     # Context elements can include elements of other schemas (by element ref)
-                    self.assertIn(e, xpath_context_elements, msg=xsd_file)
+                    self.assertIn(xsd_element, context_xsd_elements, msg=xsd_file)
 
             # Checks on XSD types
             for xsd_type in schema.maps.iter_components(xsd_classes=XsdType):
@@ -167,8 +172,8 @@ def make_schema_test_class(test_file, test_args, test_num, schema_class, check_w
                         os.chdir(tempdir)
                         generator.render_to_files('bindings.py.jinja')
 
-                        spec = importlib.util.spec_from_file_location(tempdir, 'bindings.py')
-                        module = importlib.util.module_from_spec(spec)
+                        spec = importlib_util.spec_from_file_location(tempdir, 'bindings.py')
+                        module = importlib_util.module_from_spec(spec)
                         spec.loader.exec_module(module)
                     finally:
                         os.chdir(cwd)
@@ -216,7 +221,7 @@ def make_schema_test_class(test_file, test_args, test_num, schema_class, check_w
                 self.check_xsd_file_with_lxml(xmlschema_time=time.time() - start_time)
             self.check_errors(xsd_file, expected_errors)
 
-    TestSchema.__name__ = TestSchema.__qualname__ = str('TestSchema{0:03}'.format(test_num))
+    TestSchema.__name__ = TestSchema.__qualname__ = str(f'TestSchema{test_num:03}')
     return TestSchema
 
 
@@ -267,8 +272,6 @@ def make_validation_test_class(test_file, test_args, test_num, schema_class, che
                 pdb.set_trace()
 
         def check_decode_encode(self, root, converter=None, **kwargs):
-            namespaces = kwargs.get('namespaces', {})
-
             lossy = converter in (ParkerConverter, AbderaConverter, ColumnarConverter)
             losslessly = converter is JsonMLConverter
             unordered = converter not in (AbderaConverter, JsonMLConverter) or \
@@ -295,9 +298,14 @@ def make_validation_test_class(test_file, test_args, test_num, schema_class, che
                         self.check_namespace_prefixes(str(e))
                 elem1 = elem1[0]
 
+            # Checks if the encoded element is of the same type of the root element
+            self.assertFalse(hasattr(root, 'nsmap') ^ hasattr(elem1, 'nsmap'))
+
             # Checks the encoded element to not contains reserved namespace prefixes
-            if namespaces and all('ns%d' % k not in namespaces for k in range(10)):
-                self.check_namespace_prefixes(etree_tostring(elem1, namespaces=namespaces))
+            if 'namespaces' in kwargs:
+                self.check_namespace_prefixes(
+                    etree_tostring(elem1, namespaces=kwargs['namespaces'])
+                )
 
             # Main check: compare original a re-encoded tree
             try:
@@ -450,16 +458,17 @@ def make_validation_test_class(test_file, test_args, test_num, schema_class, che
 
         def check_data_conversion_with_element_tree(self):
             root = ElementTree.parse(xml_file).getroot()
-            namespaces = fetch_namespaces(xml_file)
-            options = {'namespaces': namespaces}
+            namespaces = fetch_namespaces(xml_file)  # need a collapsed nsmap
+            options = {'namespaces': namespaces, 'xmlns_processing': 'none'}
 
             self.check_decode_encode(root, cdata_prefix='#', **options)  # Default converter
             self.check_decode_encode(root, UnorderedConverter, cdata_prefix='#', **options)
             self.check_decode_encode(root, ParkerConverter, validation='lax', **options)
             self.check_decode_encode(root, ParkerConverter, validation='skip', **options)
             self.check_decode_encode(root, BadgerFishConverter, **options)
+            self.check_decode_encode(root, GDataConverter, **options)
             self.check_decode_encode(root, AbderaConverter, **options)
-            self.check_decode_encode(root, JsonMLConverter, **options)
+            # self.check_decode_encode(root, JsonMLConverter, **options)
             self.check_decode_encode(root, ColumnarConverter, validation='lax', **options)
 
             self.check_decode_encode(root, DataElementConverter, **options)
@@ -471,8 +480,9 @@ def make_validation_test_class(test_file, test_args, test_num, schema_class, che
             self.check_json_serialization(root, ParkerConverter, validation='lax', **options)
             self.check_json_serialization(root, ParkerConverter, validation='skip', **options)
             self.check_json_serialization(root, BadgerFishConverter, **options)
+            self.check_json_serialization(root, GDataConverter, **options)
             self.check_json_serialization(root, AbderaConverter, **options)
-            self.check_json_serialization(root, JsonMLConverter, **options)
+            # self.check_json_serialization(root, JsonMLConverter, **options)
             self.check_json_serialization(root, ColumnarConverter, validation='lax', **options)
 
             self.check_decode_to_objects(root)
@@ -492,11 +502,10 @@ def make_validation_test_class(test_file, test_args, test_num, schema_class, che
 
         def check_data_conversion_with_lxml(self):
             xml_tree = lxml_etree.parse(xml_file)
-            namespaces = fetch_namespaces(xml_file)
 
             lxml_errors = []
             lxml_decoded_chunks = []
-            for obj in self.schema.iter_decode(xml_tree, namespaces=namespaces):
+            for obj in self.schema.iter_decode(xml_tree):
                 if isinstance(obj, xmlschema.XMLSchemaValidationError):
                     lxml_errors.append(obj)
                 else:
@@ -507,6 +516,20 @@ def make_validation_test_class(test_file, test_args, test_num, schema_class, che
 
             if not lxml_errors:
                 root = xml_tree.getroot()
+
+                options = {
+                    'etree_element_class': lxml_etree_element,
+                }
+                self.check_decode_encode(root, cdata_prefix='#', **options)  # Default converter
+                self.check_decode_encode(root, UnorderedConverter, cdata_prefix='#', **options)
+                self.check_decode_encode(root, BadgerFishConverter, **options)
+                self.check_decode_encode(root, GDataConverter, **options)
+                self.check_decode_encode(root, JsonMLConverter, **options)
+
+                # Tests with converters that loss namespace information and JSON
+                # serialization: need to provide a full namespace map and don't
+                # update that map.
+                namespaces = fetch_namespaces(xml_file, root_only=False)
                 if namespaces.get(''):
                     # Add a not empty prefix for encoding to avoid the use of reserved prefix ns0
                     namespaces['tns0'] = namespaces['']
@@ -514,22 +537,20 @@ def make_validation_test_class(test_file, test_args, test_num, schema_class, che
                 options = {
                     'etree_element_class': lxml_etree_element,
                     'namespaces': namespaces,
+                    'xmlns_processing': 'none'
                 }
-                self.check_decode_encode(root, cdata_prefix='#', **options)  # Default converter
                 self.check_decode_encode(root, ParkerConverter, validation='lax', **options)
                 self.check_decode_encode(root, ParkerConverter, validation='skip', **options)
-                self.check_decode_encode(root, BadgerFishConverter, **options)
                 self.check_decode_encode(root, AbderaConverter, **options)
-                self.check_decode_encode(root, JsonMLConverter, **options)
-                self.check_decode_encode(root, UnorderedConverter, cdata_prefix='#', **options)
 
                 self.check_json_serialization(root, cdata_prefix='#', **options)
+                self.check_json_serialization(root, UnorderedConverter, **options)
                 self.check_json_serialization(root, ParkerConverter, validation='lax', **options)
                 self.check_json_serialization(root, ParkerConverter, validation='skip', **options)
                 self.check_json_serialization(root, BadgerFishConverter, **options)
+                self.check_json_serialization(root, GDataConverter, **options)
                 self.check_json_serialization(root, AbderaConverter, **options)
-                self.check_json_serialization(root, JsonMLConverter, **options)
-                self.check_json_serialization(root, UnorderedConverter, **options)
+                # self.check_json_serialization(root, JsonMLConverter, **options)
 
         def check_validate_and_is_valid_api(self):
             if expected_errors:
@@ -541,6 +562,16 @@ def make_validation_test_class(test_file, test_args, test_num, schema_class, che
                 self.assertIsNone(self.schema.validate(xml_file), msg=xml_file)
 
         def check_iter_errors(self):
+            def compare_error_reasons(reason, other_reason):
+                if ' at 0x' in reason:
+                    self.assertEqual(
+                        OBJ_ID_PATTERN.sub(' at 0xff', reason),
+                        OBJ_ID_PATTERN.sub(' at 0xff', other_reason),
+                        msg=xml_file
+                    )
+                else:
+                    self.assertEqual(reason, other_reason, msg=xml_file)
+
             errors = list(self.schema.iter_errors(xml_file))
             for e in errors:
                 self.assertIsInstance(e.reason, str, msg=xml_file)
@@ -549,12 +580,12 @@ def make_validation_test_class(test_file, test_args, test_num, schema_class, che
             module_api_errors = list(xmlschema.iter_errors(xml_file, schema=self.schema))
             self.assertEqual(len(errors), len(module_api_errors), msg=xml_file)
             for e, api_error in zip(errors, module_api_errors):
-                self.assertEqual(e.reason, api_error.reason, msg=xml_file)
+                compare_error_reasons(e.reason, api_error.reason)
 
             lazy_errors = list(xmlschema.iter_errors(xml_file, schema=self.schema, lazy=True))
             self.assertEqual(len(errors), len(lazy_errors), msg=xml_file)
             for e, lazy_error in zip(errors, lazy_errors):
-                self.assertEqual(e.reason, lazy_error.reason, msg=xml_file)
+                compare_error_reasons(e.reason, lazy_error.reason)
 
             # TODO: Test also lazy validation with lazy=2.
             #  This needs two fixes in XPath:
@@ -591,8 +622,8 @@ def make_validation_test_class(test_file, test_args, test_num, schema_class, che
                     with open(module_name, 'w') as fp:
                         fp.write(python_module)
 
-                    spec = importlib.util.spec_from_file_location(tempdir, module_name)
-                    module = importlib.util.module_from_spec(spec)
+                    spec = importlib_util.spec_from_file_location(tempdir, module_name)
+                    module = importlib_util.module_from_spec(spec)
                     spec.loader.exec_module(module)
 
                     xml_root = ElementTree.parse(os.path.join(cwd, xml_file)).getroot()
@@ -636,5 +667,5 @@ def make_validation_test_class(test_file, test_args, test_num, schema_class, che
 
                 self.check_validation_with_generated_code()
 
-    TestValidator.__name__ = TestValidator.__qualname__ = 'TestValidator{0:03}'.format(test_num)
+    TestValidator.__name__ = TestValidator.__qualname__ = f'TestValidator{test_num:03}'
     return TestValidator

@@ -8,16 +8,76 @@
 # @author Davide Brunato <brunato@sissa.it>
 #
 import re
+import os
+import logging
+import traceback
 from collections import Counter
 from decimal import Decimal
-from typing import Any, Callable, Iterator, List, MutableMapping, \
-    Optional, Tuple, Union
+from functools import wraps
+from typing import Any, Callable, Iterable, Iterator, List, MutableMapping, \
+    MutableSequence, Optional, Tuple, TypeVar, Union
+from xml.etree.ElementTree import ParseError
+
 from .exceptions import XMLSchemaValueError, XMLSchemaTypeError
-from .names import XSI_SCHEMA_LOCATION, XSI_NONS_SCHEMA_LOCATION
+from .names import XML_NAMESPACE, XSI_SCHEMA_LOCATION, XSI_NONS_SCHEMA_LOCATION
 from .aliases import ElementType, NamespacesType, AtomicValueType, NumericValueType
+from .translation import gettext as _
 
 ###
-# Helper functions for QNames
+# Helper functions for logging
+
+logger = logging.getLogger('xmlschema')
+
+LOG_LEVELS = {'DEBUG', 'INFO', 'WARN', 'WARNING', 'ERROR', 'CRITICAL'}
+
+
+def set_logging_level(level: Union[str, int]) -> None:
+    """Set logging level of xmlschema's logger."""
+    if isinstance(level, str):
+        _level = level.strip().upper()
+        if _level not in LOG_LEVELS:
+            raise XMLSchemaValueError(
+                _("{!r} is not a valid loglevel").format(level)
+            )
+        logger.setLevel(getattr(logging, _level))
+    else:
+        logger.setLevel(level)
+
+
+RT = TypeVar('RT')
+
+
+def logged(func: Callable[..., RT]) -> Callable[..., RT]:
+    """
+    A decorator for activating a logging level for a function. The keyword
+    argument 'loglevel' is obtained from the keyword arguments and used by the
+    wrapper function to set the logging level of the decorated function and
+    to restore the original level after the call.
+    """
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        loglevel: Optional[Union[int, str]] = kwargs.get('loglevel')
+        if loglevel is None:
+            return func(*args, **kwargs)
+        else:
+            current_level = logger.level
+            set_logging_level(loglevel)
+            try:
+                return func(*args, **kwargs)
+            finally:
+                logger.setLevel(current_level)
+
+    return wrapper
+
+
+def format_xmlschema_stack() -> str:
+    """Extract a formatted traceback for xmlschema package from current stack frame."""
+    package_path = os.path.dirname(__file__)
+    return ''.join(line for line in traceback.format_stack()[:-1] if package_path in line)
+
+
+###
+# Helper functions for QNames and namespaces
 
 NAMESPACE_PATTERN = re.compile(r'{([^}]*)}')
 
@@ -52,10 +112,10 @@ def get_qname(uri: Optional[str], name: str) -> str:
     :param name: local or qualified name
     :return: string or the name argument
     """
-    if not uri or not name or name[0] in ('{', '.', '/', '['):
+    if not uri or not name or name[0] in '{./[':
         return name
     else:
-        return '{%s}%s' % (uri, name)
+        return f'{{{uri}}}{name}'
 
 
 def local_name(qname: str) -> str:
@@ -67,15 +127,15 @@ def local_name(qname: str) -> str:
     """
     try:
         if qname[0] == '{':
-            _, qname = qname.split('}')
+            _namespace, qname = qname.split('}')
         elif ':' in qname:
-            _, qname = qname.split(':')
+            _prefix, qname = qname.split(':')
     except IndexError:
         return ''
     except ValueError:
-        raise XMLSchemaValueError("the argument 'qname' has a wrong format: %r" % qname)
+        raise XMLSchemaValueError("the argument 'qname' has an invalid value %r" % qname)
     except TypeError:
-        raise XMLSchemaTypeError("the argument 'qname' must be a string")
+        raise XMLSchemaTypeError("the argument 'qname' must be a string-like object")
     else:
         return qname
 
@@ -99,9 +159,9 @@ def get_prefixed_qname(qname: str,
     if not prefixes:
         return qname
     elif prefixes[0]:
-        return '%s:%s' % (prefixes[0], qname.split('}', 1)[1])
+        return f"{prefixes[0]}:{qname.split('}', 1)[1]}"
     elif len(prefixes) > 1:
-        return '%s:%s' % (prefixes[1], qname.split('}', 1)[1])
+        return f"{prefixes[1]}:{qname.split('}', 1)[1]}"
     elif use_empty:
         return qname.split('}', 1)[1]
     else:
@@ -131,14 +191,65 @@ def get_extended_qname(qname: str, namespaces: Optional[MutableMapping[str, str]
         if not namespaces.get(''):
             return qname
         else:
-            return '{%s}%s' % (namespaces[''], qname)
+            return f"{{{namespaces['']}}}{qname}"
     else:
         try:
             uri = namespaces[prefix]
         except KeyError:
             return qname
         else:
-            return '{%s}%s' % (uri, name) if uri else name
+            return f'{{{uri}}}{name}' if uri else name
+
+
+def update_namespaces(namespaces: NamespacesType,
+                      xmlns: Iterable[Tuple[str, str]],
+                      root_declarations: bool = False) -> None:
+    """
+    Update a namespace map without overwriting existing declarations.
+    If a duplicate prefix is encountered in a xmlns declaration, and
+    this is mapped to a different namespace, adds the namespace using
+    a different generated prefix. The empty prefix '' is used only if
+    it's declared at root level to avoid erroneous mapping of local
+    names. In other cases it uses the prefix 'default' as substitute.
+
+    :param namespaces: the target namespace map.
+    :param xmlns: an iterable containing couples of namespace declarations.
+    :param root_declarations: provide `True` if the namespace declarations \
+    belong to the root element, `False` otherwise (default).
+    """
+    for prefix, uri in xmlns:
+        if not prefix:
+            if not uri:
+                continue
+            elif '' not in namespaces:
+                if root_declarations:
+                    namespaces[''] = uri
+                    continue
+            elif namespaces[''] == uri:
+                continue
+            prefix = 'default'
+
+        while prefix in namespaces:
+            if namespaces[prefix] == uri:
+                break
+            match = re.search(r'(\d+)$', prefix)
+            if match:
+                index = int(match.group()) + 1
+                prefix = prefix[:match.span()[0]] + str(index)
+            else:
+                prefix += '0'
+        else:
+            namespaces[prefix] = uri
+
+
+def get_namespace_map(namespaces: Optional[NamespacesType]) -> NamespacesType:
+    """Returns a new and checked namespace map."""
+    namespaces = {k: v for k, v in namespaces.items()} if namespaces else {}
+    if namespaces.get('xml', XML_NAMESPACE) != XML_NAMESPACE:
+        msg = f"reserved prefix 'xml' can be used only for {XML_NAMESPACE!r} namespace"
+        raise XMLSchemaValueError(msg)
+
+    return namespaces
 
 
 ###
@@ -184,11 +295,11 @@ def etree_iterpath(elem: ElementType,
 
     for child in elem:
         if callable(child.tag):
-            continue  # Skip lxml comments
+            continue  # Skip comments and PIs
 
         child_name = child.tag if namespaces is None else get_prefixed_qname(child.tag, namespaces)
         if path == '/':
-            child_path = '/%s' % child_name
+            child_path = f'/{child_name}'
         else:
             child_path = '/'.join((path, child_name))
 
@@ -219,9 +330,9 @@ def etree_getpath(elem: ElementType,
     if relative:
         path = '.'
     elif namespaces:
-        path = '/%s' % get_prefixed_qname(root.tag, namespaces)
+        path = f'/{get_prefixed_qname(root.tag, namespaces)}'
     else:
-        path = '/%s' % root.tag
+        path = f'/{root.tag}'
 
     if not parent_path:
         for e, path in etree_iterpath(root, elem.tag, path, namespaces, add_position):
@@ -246,10 +357,31 @@ def etree_iter_location_hints(elem: ElementType) -> Iterator[Tuple[Any, Any]]:
             yield '', url
 
 
+def etree_iter_namespaces(root: ElementType,
+                          elem: Optional[ElementType] = None) -> Iterator[str]:
+    """
+    Yields namespaces of an ElementTree structure. If an *elem* is
+    provided stops when found if during the iteration.
+    """
+    if root.tag != '{' and root is not elem:
+        yield ''
+
+    for e in root.iter():
+        if e is elem:
+            return
+        elif e.tag[0] == '{':
+            yield get_namespace(e.tag)
+
+        if e.attrib:
+            for name in e.attrib:
+                if name[0] == '{':
+                    yield get_namespace(name)
+
+
 def prune_etree(root: ElementType, selector: Callable[[ElementType], bool]) \
         -> Optional[bool]:
     """
-    Removes from an tree structure the elements that verify the selector
+    Removes from a tree structure the elements that verify the selector
     function. The checking and eventual removals are performed using a
     breadth-first visit method.
 
@@ -321,3 +453,33 @@ def raw_xml_encode(value: Union[None, AtomicValueType, List[AtomicValueType],
         return ' '.join(str(e) for e in value)
     else:
         return str(value) if value is not None else None
+
+
+def is_defuse_error(err: Exception) -> bool:
+    """
+    Returns `True` if the error is related to defuse of XML data in the DTD
+    of the source (forbid entities or external references), `False` otherwise.
+    """
+    if not isinstance(err, ParseError):
+        return False
+
+    msg = str(err)
+    return "Entities are forbidden" in msg or \
+        "Unparsed entities are forbidden" in msg or \
+        "External references are forbidden" in msg
+
+
+def iter_decoded_data(obj: Any, level: int = 0) \
+        -> Iterator[Tuple[Union[MutableMapping[Any, Any], MutableSequence[Any]], int]]:
+    """
+    Iterates a nested object composed by lists and dictionaries,
+    pairing with the level depth.
+    """
+    if isinstance(obj, MutableMapping):
+        yield obj, level
+        for value in obj.values():
+            yield from iter_decoded_data(value, level + 1)
+    elif isinstance(obj, MutableSequence):
+        yield obj, level
+        for item in obj:
+            yield from iter_decoded_data(item, level + 1)

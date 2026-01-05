@@ -1,4 +1,3 @@
-
 # Copyright (c), 2016-2020, SISSA (International School for Advanced Studies).
 # All rights reserved.
 # This file is distributed under the terms of the MIT License.
@@ -10,8 +9,9 @@
 from .exceptions import XMLSchemaValidatorError, XMLSchemaParseError, \
     XMLSchemaModelError, XMLSchemaModelDepthError, XMLSchemaValidationError, \
     XMLSchemaDecodeError, XMLSchemaEncodeError, XMLSchemaNotBuiltError, \
-    XMLSchemaChildrenValidationError, XMLSchemaIncludeWarning, \
-    XMLSchemaImportWarning, XMLSchemaTypeTableWarning
+    XMLSchemaChildrenValidationError, XMLSchemaStopValidation, \
+    XMLSchemaIncludeWarning, XMLSchemaImportWarning, \
+    XMLSchemaTypeTableWarning, XMLSchemaAssertPathWarning
 
 from .xsdbase import XsdValidator, XsdComponent, XsdAnnotation, XsdType, \
     ValidationMixin
@@ -42,7 +42,8 @@ __all__ = [
     'XMLSchemaValidatorError', 'XMLSchemaParseError', 'XMLSchemaModelError',
     'XMLSchemaModelDepthError', 'XMLSchemaValidationError', 'XMLSchemaDecodeError',
     'XMLSchemaEncodeError', 'XMLSchemaNotBuiltError', 'XMLSchemaChildrenValidationError',
-    'XMLSchemaIncludeWarning', 'XMLSchemaImportWarning', 'XMLSchemaTypeTableWarning',
+    'XMLSchemaStopValidation', 'XMLSchemaIncludeWarning', 'XMLSchemaImportWarning',
+    'XMLSchemaTypeTableWarning', 'XMLSchemaAssertPathWarning',
     'XsdValidator', 'XsdComponent', 'XsdAnnotation', 'XsdType', 'ValidationMixin',
     'ParticleMixin', 'XsdAssert', 'XsdNotation', 'XsdSelector', 'XsdFieldSelector',
     'XsdIdentity', 'XsdKeyref', 'XsdKey', 'XsdUnique', 'Xsd11Keyref', 'Xsd11Key',

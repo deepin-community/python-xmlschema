@@ -11,11 +11,15 @@
 import unittest
 import xml.etree.ElementTree as ElementTree
 from pathlib import Path
+from typing import Dict
 
 from xmlschema import XMLSchema10, XMLSchema11, fetch_namespaces, etree_tostring, \
-    XMLSchemaValidationError, DataElement, DataElementConverter, XMLResource
+    XMLSchemaValidationError, DataElement, DataElementConverter, XMLResource, \
+    XsdElement, XsdAttribute, XsdType
 
+from xmlschema.validators import XsdAttributeGroup
 from xmlschema.helpers import is_etree_element
+from xmlschema.names import XSI_TYPE
 from xmlschema.dataobjects import DataBindingMeta, DataBindingConverter
 from xmlschema.testing import etree_elements_assert_equal
 
@@ -43,10 +47,29 @@ class TestDataElementInterface(unittest.TestCase):
         self.assertIsNone(data_element.get('a'))
         self.assertEqual(data_element.get('b'), 9)
 
-    def test_namespaces(self):
+    def test_nsmap(self):
         self.assertEqual(DataElement('foo').nsmap, {})
         nsmap = {'tns': 'http://xmlschema.test/ns'}
         self.assertEqual(DataElement('foo', nsmap=nsmap).nsmap, nsmap)
+        self.assertIsNot(DataElement('foo', nsmap=nsmap).nsmap, nsmap)
+
+    def test_attributes_with_namespaces(self):
+        nsmap = {'tns': 'http://xmlschema.test/ns'}
+        attrib = {'tns:a': 10, '{http://xmlschema.test/ns}b': 'bar'}
+        element = DataElement('foo', attrib=attrib, nsmap=nsmap)
+
+        self.assertEqual(element.get('tns:a'), 10)
+        self.assertEqual(element.get('{http://xmlschema.test/ns}a'), 10)
+
+        self.assertEqual(element.get('{http://xmlschema.test/ns}b'), 'bar')
+        self.assertEqual(element.get('tns:b'), 'bar')
+        self.assertIsNone(element.get('tns:c'))
+
+        self.assertIsNone(element.get('tns:b:c'))
+        self.assertIsNone(element.get('tns0:b'))
+
+        self.assertIsNone(element.set('tns:c', 8))
+        self.assertEqual(element.get('tns:c'), 8)
 
     def test_text_value(self):
         self.assertIsNone(DataElement('foo').text)
@@ -59,6 +82,10 @@ class TestDataObjects(unittest.TestCase):
 
     schema_class = XMLSchema10
     converter = DataElementConverter
+
+    col_xsd_filename: str
+    col_xml_filename: str
+    col_nsmap: Dict[str, str]
 
     @classmethod
     def setUpClass(cls):
@@ -196,6 +223,52 @@ class TestDataObjects(unittest.TestCase):
             col_data.xsd_type = col_data[0].xsd_type
         self.assertEqual(str(ec.exception), "the instance is already bound to another XSD type")
 
+    def test_xmlns_processing_argument(self):
+        xsd_file = self.casepath('examples/collection/collection5.xsd')
+        xml_file = self.casepath('examples/collection/collection-redef-xmlns.xml')
+
+        xmlns0 = [('col1', 'http://example.com/ns/collection'),
+                  ('col', 'http://xmlschema.test/ns'),
+                  ('', 'http://xmlschema.test/ns'),
+                  ('xsi', 'http://www.w3.org/2001/XMLSchema-instance')]
+        nsmap0 = dict(xmlns0)
+        xmlns1 = [('col', 'http://example.com/ns/collection')]
+        nsmap1 = dict(xmlns0)
+        nsmap1.update(xmlns1)
+        schema = self.schema_class(xsd_file)
+        self.assertTrue(schema.is_valid(xml_file))
+
+        resource = XMLResource(xml_file)
+        obj = schema.decode(resource, converter=self.converter)
+        self.assertListEqual(obj.xmlns, xmlns0)
+        self.assertDictEqual(obj.nsmap, nsmap0)
+        self.assertListEqual(obj[0].xmlns, xmlns1)
+        self.assertDictEqual(obj[0].nsmap, nsmap1)
+        root = schema.encode(obj, converter=self.converter)
+        self.assertTrue(is_etree_element(root))
+
+        obj = schema.decode(resource, converter=self.converter, xmlns_processing='stacked')
+        self.assertListEqual(obj.xmlns, xmlns0)
+        self.assertDictEqual(obj.nsmap, nsmap0)
+        self.assertListEqual(obj[0].xmlns, xmlns1)
+        self.assertDictEqual(obj[0].nsmap, nsmap1)
+        root = schema.encode(obj, converter=self.converter, xmlns_processing='stacked')
+        self.assertTrue(is_etree_element(root))
+
+        obj = schema.decode(resource, converter=self.converter, xmlns_processing='collapsed')
+        root = schema.encode(obj, converter=self.converter, xmlns_processing='collapsed')
+        self.assertTrue(is_etree_element(root))
+
+        obj = schema.decode(resource, converter=self.converter, xmlns_processing='root-only')
+        root = schema.encode(obj, converter=self.converter, xmlns_processing='root-only')
+        self.assertTrue(is_etree_element(root))
+
+        obj = schema.decode(resource, converter=self.converter, xmlns_processing='none')
+        root = schema.encode(obj, converter=self.converter, xmlns_processing='none')
+        self.assertTrue(is_etree_element(root))
+        for data_element in obj.iter():
+            self.assertDictEqual(data_element.nsmap, {})
+
     def test_encode_to_element_tree(self):
         col_data = self.col_schema.decode(self.col_xml_filename)
 
@@ -241,12 +314,72 @@ class TestDataObjects(unittest.TestCase):
         self.assertIsInstance(etree_tostring(obj), str)
         self.assertIsNone(etree_elements_assert_equal(obj, root, strict=False))
 
+    def test_collapsed_namespace_map(self):
+        col_data = self.col_schema.decode(self.col_xml_filename)
+
+        namespaces = col_data.get_namespaces()
+        self.assertDictEqual(
+            namespaces,
+            {'col': 'http://example.com/ns/collection',
+             'xsi': 'http://www.w3.org/2001/XMLSchema-instance'}
+        )
+
+        namespaces = col_data.get_namespaces({'': 'http://xmlschema.test/ns'})
+        self.assertDictEqual(
+            namespaces,
+            {'': 'http://xmlschema.test/ns',
+             'col': 'http://example.com/ns/collection',
+             'xsi': 'http://www.w3.org/2001/XMLSchema-instance'}
+        )
+
+        namespaces = col_data.get_namespaces({'tns': 'http://xmlschema.test/ns'})
+        self.assertDictEqual(
+            namespaces,
+            {'tns': 'http://xmlschema.test/ns',
+             'col': 'http://example.com/ns/collection',
+             'xsi': 'http://www.w3.org/2001/XMLSchema-instance'}
+        )
+
+        namespaces = col_data.get_namespaces({'xsi': 'http://xmlschema.test/ns'})
+        self.assertDictEqual(
+            namespaces,
+            {'xsi': 'http://xmlschema.test/ns',
+             'col': 'http://example.com/ns/collection',
+             'xsi0': 'http://www.w3.org/2001/XMLSchema-instance'}
+        )
+
+        xsd_filename = self.casepath('examples/collection/collection5.xsd')
+        col_schema = self.schema_class(xsd_filename, converter=self.converter)
+        xml_filename = self.casepath('examples/collection/collection-default.xml')
+        col_data = col_schema.decode(xml_filename)
+
+        namespaces = col_data.get_namespaces()
+        self.assertDictEqual(
+            namespaces,
+            {'': 'http://example.com/ns/collection',
+             'xsi': 'http://www.w3.org/2001/XMLSchema-instance'}
+        )
+
+        namespaces = col_data.get_namespaces({'': 'http://xmlschema.test/ns'})
+        self.assertDictEqual(
+            namespaces,
+            {'': 'http://xmlschema.test/ns',
+             'default': 'http://example.com/ns/collection',
+             'xsi': 'http://www.w3.org/2001/XMLSchema-instance'}
+        )
+
     def test_serialize_to_xml_source(self):
         col_data = self.col_schema.decode(self.col_xml_filename)
 
-        xml_source = col_data.tostring()
-        self.assertTrue(xml_source.startswith('<col:collection '))
-        self.assertTrue(xml_source.endswith('</col:collection>'))
+        with Path(self.col_xml_filename).open() as fp:
+            _ = fp.read()
+
+        result = col_data.tostring()
+        self.assertTrue(result.startswith('<col:collection '))
+        self.assertTrue(result.endswith('</col:collection>'))
+
+        result = col_data.tostring(xml_declaration=True)
+        self.assertTrue(self.col_schema.is_valid(result))
 
     def test_validation(self):
         with self.assertRaises(ValueError) as ec:
@@ -351,6 +484,79 @@ class TestDataObjects(unittest.TestCase):
             converter.element_encode(col_data, col_data[0].xsd_element)
         self.assertEqual("Unmatched tag", str(ec.exception))
 
+    def test_decoded_names__issue_314(self):
+        xsd_file = self.casepath('issues/issue_314/issue_314.xsd')
+        xml_file = self.casepath('issues/issue_314/issue_314.xml')
+        schema = self.schema_class(xsd_file)
+
+        data_element = schema.to_objects(xml_file, process_namespaces=True)
+        self.assertEqual(data_element.prefixed_name, 'p:root-element')
+        self.assertEqual(data_element[0].prefixed_name, 'p:container')
+        self.assertEqual(data_element[0][0].prefixed_name, 'p:item')
+        self.assertEqual(
+            data_element[0][0].attrib,
+            {'b:type': 'p:ConcreteContainterItemInfo', 'attr_2': 'value_2'}
+        )
+        self.assertEqual(data_element[0][0].get(XSI_TYPE), 'p:ConcreteContainterItemInfo')
+        self.assertEqual(data_element[0][0].get('b:type'), 'p:ConcreteContainterItemInfo')
+        self.assertIsNone(data_element[0][0].get('xsi:type'))
+
+        data_element = schema.to_objects(xml_file, process_namespaces=False)
+        self.assertEqual(data_element.prefixed_name, '{my_namespace}root-element')
+        self.assertEqual(data_element[0].prefixed_name, '{my_namespace}container')
+        self.assertEqual(data_element[0][0].prefixed_name, '{my_namespace}item')
+        self.assertEqual(
+            data_element[0][0].attrib,
+            {f'{XSI_TYPE}': 'p:ConcreteContainterItemInfo', 'attr_2': 'value_2'}
+        )
+        self.assertEqual(data_element[0][0].get(XSI_TYPE), 'p:ConcreteContainterItemInfo')
+        self.assertIsNone(data_element[0][0].get('b:type'))
+        self.assertIsNone(data_element[0][0].get('xsi:type'))
+
+        # For adding namespaces after decoding replace or update nsmap of each element
+        namespaces = {'p': 'my_namespace', 'xsi': "http://www.w3.org/2001/XMLSchema-instance"}
+        for e in data_element.iter():
+            e.nsmap = namespaces
+
+        self.assertEqual(data_element.prefixed_name, 'p:root-element')
+        self.assertEqual(data_element[0].prefixed_name, 'p:container')
+        self.assertEqual(data_element[0][0].prefixed_name, 'p:item')
+        self.assertEqual(data_element[0][0].get(XSI_TYPE), 'p:ConcreteContainterItemInfo')
+        self.assertIsNone(data_element[0][0].get('b:type'))
+        self.assertEqual(data_element[0][0].get('xsi:type'), 'p:ConcreteContainterItemInfo')
+
+    def test_map_attribute_names__issue_314(self):
+        xsd_file = self.casepath('issues/issue_314/issue_314.xsd')
+        xml_file = self.casepath('issues/issue_314/issue_314.xml')
+        schema = self.schema_class(xsd_file)
+
+        data_element = schema.to_objects(xml_file, map_attribute_names=False)
+        self.assertEqual(data_element.prefixed_name, 'p:root-element')
+        self.assertEqual(data_element[0].prefixed_name, 'p:container')
+        self.assertEqual(data_element[0][0].prefixed_name, 'p:item')
+        self.assertEqual(
+            data_element[0][0].attrib,
+            {f'{XSI_TYPE}': 'p:ConcreteContainterItemInfo', 'attr_2': 'value_2'}
+        )
+        self.assertEqual(data_element[0][0].get(XSI_TYPE), 'p:ConcreteContainterItemInfo')
+        self.assertEqual(data_element[0][0].get('b:type'), 'p:ConcreteContainterItemInfo')
+        self.assertIsNone(data_element[0][0].get('xsi:type'))
+
+    def test_xsd_attribute_access__issue_331(self):
+        col_data = self.col_schema.decode(self.col_xml_filename)
+        self.assertIsInstance(col_data[0].xsd_element, XsdElement)
+        self.assertEqual(col_data[0].xsd_element.name, 'object')
+        self.assertIsInstance(
+            col_data[0].xsd_element.attributes, XsdAttributeGroup
+        )
+        xsd_attribute = col_data[0].xsd_element.attributes.get('id')
+        self.assertIsInstance(xsd_attribute, XsdAttribute)
+
+        xsd_attribute = col_data[0].xsd_element.find('@id')
+        self.assertIsInstance(xsd_attribute, XsdAttribute)
+        self.assertIsInstance(xsd_attribute.type, XsdType)
+        self.assertIsNone(col_data[0].xsd_element.find('@unknown'))
+
 
 class TestDataBindings(TestDataObjects):
 
@@ -387,6 +593,10 @@ class TestDataBindings(TestDataObjects):
             self.assertTrue(issubclass(xsd_element.binding, DataElement))
             self.assertIsInstance(xsd_element.binding, DataBindingMeta)
             self.assertIs(binding_class, xsd_element.binding)
+
+            # regression tests for issue 300
+            self.assertIs(binding_class, xsd_element.get_binding())
+            self.assertIsNot(binding_class, xsd_element.get_binding(replace_existing=True))
         finally:
             xsd_element.binding = None
 

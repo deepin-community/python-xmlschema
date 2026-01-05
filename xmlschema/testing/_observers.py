@@ -7,7 +7,7 @@
 #
 # @author Davide Brunato <brunato@sissa.it>
 #
-# type: ignore
+# mypy: ignore-errors
 """
 Observers for testing XMLSchema classes.
 """
@@ -30,7 +30,7 @@ class SchemaObserver:
         if isinstance(builder, type):
             class BuilderProxy(builder):
                 def __init__(self, *args, **kwargs):
-                    super(BuilderProxy, self).__init__(*args, **kwargs)
+                    super().__init__(*args, **kwargs)
                     assert isinstance(self, XsdComponent)
 
                     if not cls.is_dummy_component(self):

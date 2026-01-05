@@ -5,9 +5,12 @@ Maintainer: Debian Python Team <team+python@tracker.debian.org>
 Uploaders: Christian Kastner <ckk@debian.org>
 Build-Depends: debhelper-compat (= 13),
                dh-python,
+	       dh-sequence-python3,
+	       dh-sequence-sphinxdoc,
                help2man,
+	       pybuild-plugin-pyproject,
                python3-all,
-               python3-elementpath (>= 2.5.0),
+               python3-elementpath (>= 4.4.0),
                python3-jinja2,
                python3-lxml,
                python3-setuptools,
@@ -15,10 +18,11 @@ Build-Depends: debhelper-compat (= 13),
                python3-sphinx-rtd-theme <!nodoc>,
 	       wget,
 Rules-Requires-Root: no
-Standards-Version: 4.6.2
+Standards-Version: 4.7.2
 Homepage: https://github.com/sissaschool/xmlschema
 Vcs-Git: https://salsa.debian.org/python-team/packages/python-xmlschema.git
 Vcs-Browser: https://salsa.debian.org/python-team/packages/python-xmlschema
+Testsuite: autopkgtest-pkg-pybuild
 
 Package: python3-xmlschema
 Architecture: all

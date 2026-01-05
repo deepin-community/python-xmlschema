@@ -12,12 +12,11 @@ This module contains functions and classes for namespaces XSD declarations/defin
 """
 import warnings
 from collections import Counter
-from functools import lru_cache
 from typing import cast, Any, Callable, Dict, List, Iterable, Iterator, \
-    MutableMapping, Optional, Set, Union, Tuple, Type
+    MutableMapping, Optional, Set, Union, Tuple, Type, TYPE_CHECKING
 
-from ..exceptions import XMLSchemaKeyError, XMLSchemaTypeError, XMLSchemaValueError, \
-    XMLSchemaRuntimeError, XMLSchemaWarning
+from ..exceptions import XMLSchemaKeyError, XMLSchemaTypeError, \
+    XMLSchemaValueError, XMLSchemaWarning
 from ..names import XSD_NAMESPACE, XSD_REDEFINE, XSD_OVERRIDE, XSD_NOTATION, \
     XSD_ANY_TYPE, XSD_SIMPLE_TYPE, XSD_COMPLEX_TYPE, XSD_GROUP, \
     XSD_ATTRIBUTE, XSD_ATTRIBUTE_GROUP, XSD_ELEMENT, XSI_TYPE
@@ -25,12 +24,18 @@ from ..aliases import ComponentClassType, ElementType, SchemaType, BaseXsdType, 
     SchemaGlobalType
 from ..helpers import get_qname, local_name, get_extended_qname
 from ..namespaces import NamespaceResourcesMap
+from ..translation import gettext as _
+
 from .exceptions import XMLSchemaNotBuiltError, XMLSchemaModelError, XMLSchemaModelDepthError, \
     XMLSchemaParseError
 from .xsdbase import XsdValidator, XsdComponent
 from .builtins import xsd_builtin_types_factory
+from .models import check_model
 from . import XsdAttribute, XsdSimpleType, XsdComplexType, XsdElement, XsdAttributeGroup, \
     XsdGroup, XsdNotation, XsdIdentity, XsdAssert, XsdUnion, XsdAtomicRestriction
+
+if TYPE_CHECKING:
+    from .schemas import XMLSchemaBase
 
 
 #
@@ -72,8 +77,11 @@ def create_load_function(tag: str) \
                             xsd_globals[qname] = (elem, schema)
                             continue
 
-                    msg = "global {} with name={!r} is already defined"
-                    schema.parse_error(msg.format(local_name(tag), qname))
+                    msg = _("global {0} with name={1!r} is already defined")
+                    schema.parse_error(
+                        error=msg.format(local_name(tag), qname),
+                        elem=elem
+                    )
 
         redefined_names = Counter(x[0] for x in redefinitions)
         for qname, elem, child, schema, redefined_schema in reversed(redefinitions):
@@ -85,8 +93,11 @@ def create_load_function(tag: str) \
                 redefined_schemas: Any
                 redefined_schemas = [x[-1] for x in redefinitions if x[0] == qname]
                 if any(redefined_schemas.count(x) > 1 for x in redefined_schemas):
-                    msg = "multiple redefinition for {} {!r}"
-                    schema.parse_error(msg.format(local_name(child.tag), qname), child)
+                    msg = _("multiple redefinition for {0} {1!r}")
+                    schema.parse_error(
+                        error=msg.format(local_name(child.tag), qname),
+                        elem=child
+                    )
                 else:
                     redefined_schemas = {x[-1]: x[-2] for x in redefinitions if x[0] == qname}
                     for rs, s in redefined_schemas.items():
@@ -97,8 +108,11 @@ def create_load_function(tag: str) \
                                 break
 
                             if s is rs:
-                                msg = "circular redefinition for {} {!r}"
-                                schema.parse_error(msg.format(local_name(child.tag), qname), child)
+                                msg = _("circular redefinition for {0} {1!r}")
+                                schema.parse_error(
+                                    error=msg.format(local_name(child.tag), qname),
+                                    elem=child
+                                )
                                 break
 
             if elem.tag == XSD_OVERRIDE:
@@ -108,11 +122,11 @@ def create_load_function(tag: str) \
                 if qname in xsd_globals:
                     xsd_globals[qname] = (child, schema)
             else:
-                # Append to a list if it's a redefine
+                # Append to a list if it's a redefinition
                 try:
                     xsd_globals[qname].append((child, schema))
                 except KeyError:
-                    schema.parse_error("not a redefinition!", child)
+                    schema.parse_error(_("not a redefinition!"), child)
                 except AttributeError:
                     xsd_globals[qname] = [xsd_globals[qname], (child, schema)]
 
@@ -150,6 +164,7 @@ class XsdGlobals(XsdValidator):
 
     missing_locations: List[str]
 
+    _loaded_schemas: Set['XMLSchemaBase']
     _lookup_function_resolver = {
         XSD_SIMPLE_TYPE: 'lookup_type',
         XSD_COMPLEX_TYPE: 'lookup_type',
@@ -161,7 +176,7 @@ class XsdGlobals(XsdValidator):
     }
 
     def __init__(self, validator: SchemaType, validation: str = 'strict') -> None:
-        super(XsdGlobals, self).__init__(validation)
+        super().__init__(validation)
 
         self.validator = validator
         self.namespaces = NamespaceResourcesMap()  # Registered schemas by namespace URI
@@ -188,6 +203,7 @@ class XsdGlobals(XsdValidator):
             XSD_GROUP: validator.xsd_group_class,
             XSD_ELEMENT: validator.xsd_element_class,
         }
+        self._loaded_schemas = set()
 
     def __repr__(self) -> str:
         return '%s(validator=%r, validation=%r)' % (
@@ -196,10 +212,15 @@ class XsdGlobals(XsdValidator):
 
     def copy(self, validator: Optional[SchemaType] = None,
              validation: Optional[str] = None) -> 'XsdGlobals':
-        """Makes a copy of the object."""
-        obj = self.__class__(self.validator if validator is None else validator,
-                             validation or self.validation)
-
+        """
+        Creates a shallow copy of the object. The associated schemas do not change
+        the original global maps. This is useful for sharing the same meta-schema
+        without copying the full tree objects, saving time and memory.
+        """
+        obj = self.__class__(
+            validator=self.validator if validator is None else validator,
+            validation=validation or self.validation
+        )
         obj.namespaces.update(self.namespaces)
         obj.types.update(self.types)
         obj.attributes.update(self.attributes)
@@ -209,6 +230,7 @@ class XsdGlobals(XsdValidator):
         obj.elements.update(self.elements)
         obj.substitution_groups.update(self.substitution_groups)
         obj.identities.update(self.identities)
+        obj._loaded_schemas.update(self._loaded_schemas)
         return obj
 
     __copy__ = copy
@@ -218,7 +240,7 @@ class XsdGlobals(XsdValidator):
         General lookup method for XSD global components.
 
         :param tag: the expanded QName of the XSD the global declaration/definition \
-        (eg. '{http://www.w3.org/2001/XMLSchema}element'), that is used to select \
+        (e.g. '{http://www.w3.org/2001/XMLSchema}element'), that is used to select \
         the global map for lookup.
         :param qname: the expanded QName of the component to be looked-up.
         :returns: an XSD global component.
@@ -229,7 +251,7 @@ class XsdGlobals(XsdValidator):
         try:
             lookup_function = getattr(self, self._lookup_function_resolver[tag])
         except KeyError:
-            msg = "wrong tag {!r} for an XSD global definition/declaration"
+            msg = _("wrong tag {!r} for an XSD global definition/declaration")
             raise XMLSchemaValueError(msg.format(tag)) from None
         else:
             return lookup_function(qname)
@@ -308,7 +330,8 @@ class XsdGlobals(XsdValidator):
             try:
                 factory_or_class = self._builders[elem.tag]
             except KeyError:
-                raise XMLSchemaKeyError("wrong element %r for map %r." % (elem, global_map))
+                msg = _("wrong element {0!r} for map {1!r}")
+                raise XMLSchemaKeyError(msg.format(elem, global_map))
 
             global_map[qname] = obj,  # Encapsulate into a tuple to catch circular builds
             global_map[qname] = factory_or_class(elem, schema)
@@ -324,15 +347,16 @@ class XsdGlobals(XsdValidator):
             try:
                 factory_or_class = self._builders[elem.tag]
             except KeyError:
-                raise XMLSchemaKeyError("wrong element %r for map %r." % (elem, global_map))
+                msg = _("wrong element {0!r} for map {1!r}")
+                raise XMLSchemaKeyError(msg.format(elem, global_map))
 
             global_map[qname] = obj[0],  # To catch circular builds
             global_map[qname] = component = factory_or_class(elem, schema)
 
-            # Apply redefinitions (changing elem involve a re-parsing of the component)
+            # Apply redefinitions (changing elem involve reparse of the component)
             for elem, schema in obj[1:]:
                 if component.schema.target_namespace != schema.target_namespace:
-                    msg = "redefined schema {!r} has a different targetNamespace"
+                    msg = _("redefined schema {!r} has a different targetNamespace")
                     raise XMLSchemaValueError(msg.format(schema))
 
                 component.redefine = component.copy()
@@ -343,7 +367,8 @@ class XsdGlobals(XsdValidator):
             return global_map[qname]
 
         else:
-            raise XMLSchemaTypeError(f"unexpected instance {obj} in global map")
+            msg = _("unexpected instance {!r} in global map")
+            raise XMLSchemaTypeError(msg.format(obj))
 
     def get_instance_type(self, type_name: str, base_type: BaseXsdType,
                           namespaces: MutableMapping[str, str]) -> BaseXsdType:
@@ -374,7 +399,8 @@ class XsdGlobals(XsdValidator):
                 if xsi_type in base_type.member_types:
                     return xsi_type
 
-        raise XMLSchemaTypeError("%r cannot substitute %r" % (xsi_type, base_type))
+        msg = _("{0!r} cannot substitute {1!r}")
+        raise XMLSchemaTypeError(msg.format(xsi_type, base_type))
 
     @property
     def built(self) -> bool:
@@ -463,7 +489,6 @@ class XsdGlobals(XsdValidator):
                          for obj in ns_schemas):
                 ns_schemas.append(schema)
 
-    @lru_cache(maxsize=1000)
     def load_namespace(self, namespace: str, build: bool = True) -> bool:
         """
         Load namespace from available location hints. Returns `True` if the namespace
@@ -493,7 +518,7 @@ class XsdGlobals(XsdValidator):
                     if schema.import_schema(namespace, url, schema.base_url) is not None:
                         if build:
                             self.build()
-                except (OSError, IOError):
+                except OSError:
                     pass
                 except XMLSchemaNotBuiltError:
                     self.clear(remove_schemas=True, only_unbuilt=True)
@@ -509,7 +534,7 @@ class XsdGlobals(XsdValidator):
                     if self.validator.import_schema(namespace, url) is not None:
                         if build:
                             self.build()
-                except (OSError, IOError):
+                except OSError:
                     return False
                 except XMLSchemaNotBuiltError:
                     self.clear(remove_schemas=True, only_unbuilt=True)
@@ -542,6 +567,8 @@ class XsdGlobals(XsdValidator):
                         if k in self.identities:
                             del self.identities[k]
 
+            self._loaded_schemas.difference_update(not_built_schemas)
+
             if remove_schemas:
                 namespaces = NamespaceResourcesMap()
                 for uri, value in self.namespaces.items():
@@ -556,6 +583,7 @@ class XsdGlobals(XsdValidator):
                 global_map.clear()
             self.substitution_groups.clear()
             self.identities.clear()
+            self._loaded_schemas.clear()
 
             if remove_schemas:
                 self.namespaces.clear()
@@ -565,11 +593,12 @@ class XsdGlobals(XsdValidator):
         Build the maps of XSD global definitions/declarations. The global maps are
         updated adding and building the globals of not built registered schemas.
         """
+        meta_schema: Optional['XMLSchemaBase']
         try:
             meta_schema = self.namespaces[XSD_NAMESPACE][0]
         except KeyError:
             if self.validator.meta_schema is None:
-                msg = "missing XSD namespace in meta-schema instance {!r}"
+                msg = _("missing XSD namespace in meta-schema instance {!r}")
                 raise XMLSchemaValueError(msg.format(self.validator))
             meta_schema = None
 
@@ -577,14 +606,7 @@ class XsdGlobals(XsdValidator):
             # XSD namespace not imported or XSD namespace not managed by a meta-schema.
             # Creates a new meta-schema instance from the XSD meta-schema source and
             # replaces the default meta-schema instance in all registered schemas.
-            if self.validator.meta_schema is None:
-                msg = "missing default meta-schema instance {!r}"
-                raise XMLSchemaRuntimeError(msg.format(self.validator))
-
-            url = self.validator.meta_schema.url
-            base_schemas = {k: v for k, v in self.validator.meta_schema.BASE_SCHEMAS.items()
-                            if k not in self.namespaces}
-            meta_schema = self.validator.create_meta_schema(url, base_schemas, self)
+            meta_schema = self.validator.create_meta_schema(global_maps=self)
 
             for schema in self.iter_schemas():
                 if schema.meta_schema is not None:
@@ -593,19 +615,21 @@ class XsdGlobals(XsdValidator):
             if not self.types and meta_schema.maps is not self:
                 for source_map, target_map in zip(meta_schema.maps.global_maps, self.global_maps):
                     target_map.update(source_map)
+                self._loaded_schemas.update(meta_schema.maps._loaded_schemas)
 
-        not_built_schemas = [schema for schema in self.iter_schemas() if not schema.built]
-        for schema in not_built_schemas:
+        not_loaded_schemas = [s for s in self.iter_schemas() if s not in self._loaded_schemas]
+        for schema in not_loaded_schemas:
             schema._root_elements = None
+            self._loaded_schemas.add(schema)
 
         # Load and build global declarations
-        load_xsd_simple_types(self.types, not_built_schemas)
-        load_xsd_complex_types(self.types, not_built_schemas)
-        load_xsd_notations(self.notations, not_built_schemas)
-        load_xsd_attributes(self.attributes, not_built_schemas)
-        load_xsd_attribute_groups(self.attribute_groups, not_built_schemas)
-        load_xsd_elements(self.elements, not_built_schemas)
-        load_xsd_groups(self.groups, not_built_schemas)
+        load_xsd_simple_types(self.types, not_loaded_schemas)
+        load_xsd_complex_types(self.types, not_loaded_schemas)
+        load_xsd_notations(self.notations, not_loaded_schemas)
+        load_xsd_attributes(self.attributes, not_loaded_schemas)
+        load_xsd_attribute_groups(self.attribute_groups, not_loaded_schemas)
+        load_xsd_elements(self.elements, not_loaded_schemas)
+        load_xsd_groups(self.groups, not_loaded_schemas)
 
         if not meta_schema.built:
             xsd_builtin_types_factory(meta_schema, self.types)
@@ -622,7 +646,7 @@ class XsdGlobals(XsdValidator):
 
         for qname in self.attribute_groups:
             self.lookup_attribute_group(qname)
-        for schema in not_built_schemas:
+        for schema in not_loaded_schemas:
             if not isinstance(schema.default_attributes, str):
                 continue
 
@@ -630,11 +654,10 @@ class XsdGlobals(XsdValidator):
                 attributes = schema.maps.attribute_groups[schema.default_attributes]
             except KeyError:
                 schema.default_attributes = None
-                msg = "defaultAttributes={!r} doesn't match an attribute group of {!r}"
+                msg = _("defaultAttributes={0!r} doesn't match any attribute group of {1!r}")
                 schema.parse_error(
                     error=msg.format(schema.root.get('defaultAttributes'), schema),
-                    elem=schema.root,
-                    validation=schema.validation
+                    elem=schema.root
                 )
             else:
                 schema.default_attributes = cast(XsdAttributeGroup, attributes)
@@ -647,16 +670,16 @@ class XsdGlobals(XsdValidator):
             self.lookup_group(qname)
 
         # Build element declarations inside model groups.
-        for schema in not_built_schemas:
+        for schema in not_loaded_schemas:
             for group in schema.iter_components(XsdGroup):
                 group.build()
 
         # Build identity references and XSD 1.1 assertions
-        for schema in not_built_schemas:
+        for schema in not_loaded_schemas:
             for obj in schema.iter_components((XsdIdentity, XsdAssert)):
                 obj.build()
 
-        self.check(filter(lambda x: x.meta_schema is not None, not_built_schemas), self.validation)
+        self.check(filter(lambda x: x.meta_schema is not None, not_loaded_schemas), self.validation)
 
     def check(self, schemas: Optional[Iterable[SchemaType]] = None,
               validation: str = 'strict') -> None:
@@ -673,26 +696,26 @@ class XsdGlobals(XsdValidator):
         # Checks substitution groups circularity
         for qname in self.substitution_groups:
             xsd_element = self.elements[qname]
-            assert isinstance(xsd_element, XsdElement), "global element not built!"
+            assert isinstance(xsd_element, XsdElement), _("global element not built!")
             if any(e is xsd_element for e in xsd_element.iter_substitutes()):
-                msg = "circularity found for substitution group with head element %r"
+                msg = _("circularity found for substitution group with head element {}")
                 xsd_element.parse_error(msg.format(xsd_element), validation=validation)
 
         if validation == 'strict' and not self.built:
             raise XMLSchemaNotBuiltError(
-                self, "global map has unbuilt components: %r" % self.unbuilt
+                self, _("global map has unbuilt components: %r") % self.unbuilt
             )
 
         # Check redefined global groups restrictions
         for group in self.groups.values():
-            assert isinstance(group, XsdGroup), "global group not built!"
+            assert isinstance(group, XsdGroup), _("global group not built!")
             if group.schema not in _schemas or group.redefine is None:
                 continue
 
             while group.redefine is not None:
                 if not any(isinstance(e, XsdGroup) and e.name == group.name for e in group) \
                         and not group.is_restriction(group.redefine):
-                    msg = "the redefined group is an illegal restriction of the original group"
+                    msg = _("the redefined group is an illegal restriction")
                     group.parse_error(msg, validation=validation)
 
                 group = group.redefine
@@ -708,8 +731,8 @@ class XsdGlobals(XsdValidator):
                     base_type = xsd_type.base_type
                     if base_type and base_type.name != XSD_ANY_TYPE and base_type.is_complex():
                         if not xsd_type.content.is_restriction(base_type.content):
-                            xsd_type.parse_error("the derived group is an illegal restriction "
-                                                 "of the base type group", validation=validation)
+                            msg = _("the derived group is an illegal restriction")
+                            xsd_type.parse_error(msg, validation=validation)
 
                     if base_type.is_complex() and not base_type.open_content and \
                             xsd_type.open_content and xsd_type.open_content.mode != 'none':
@@ -718,15 +741,15 @@ class XsdGlobals(XsdValidator):
                             any_element=xsd_type.open_content.any_element
                         )
                         if not _group.is_restriction(base_type.content):
-                            msg = "restriction has an open content but base type has not"
+                            msg = _("restriction has an open content but base type has not")
                             _group.parse_error(msg, validation=validation)
 
                 try:
-                    xsd_type.content.check_model()
+                    check_model(xsd_type.content)
                 except XMLSchemaModelDepthError:
-                    msg = "cannot verify the content model of {!r} " \
-                          "due to maximum recursion depth exceeded".format(xsd_type)
-                    xsd_type.schema.warnings.append(msg)
+                    msg = _("can't verify the content model of {!r} "
+                            "due to exceeding of maximum recursion depth")
+                    xsd_type.schema.warnings.append(msg.format(xsd_type))
                     warnings.warn(msg, XMLSchemaWarning, stacklevel=4)
                 except XMLSchemaModelError as err:
                     if validation == 'strict':

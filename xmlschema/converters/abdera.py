@@ -10,10 +10,11 @@
 from collections.abc import MutableMapping, MutableSequence
 from typing import TYPE_CHECKING, Any, Optional, List, Dict, Type, Union
 
+from ..helpers import local_name
 from ..exceptions import XMLSchemaValueError
-from ..etree import ElementData
 from ..aliases import NamespacesType, BaseXsdType
-from .default import XMLSchemaConverter
+from ..resources import XMLResource
+from .default import ElementData, XMLSchemaConverter
 
 if TYPE_CHECKING:
     from ..validators import XsdElement
@@ -37,19 +38,25 @@ class AbderaConverter(XMLSchemaConverter):
                  list_class: Optional[Type[List[Any]]] = None,
                  **kwargs: Any) -> None:
         kwargs.update(attr_prefix='', text_key='', cdata_prefix=None)
-        super(AbderaConverter, self).__init__(
-            namespaces, dict_class, list_class, **kwargs
-        )
+        super().__init__(namespaces, dict_class, list_class, **kwargs)
+
+    @property
+    def xmlns_processing_default(self) -> str:
+        return 'stacked' if isinstance(self.source, XMLResource) else 'none'
 
     @property
     def lossy(self) -> bool:
         return True  # Loss cdata parts
 
+    @property
+    def loss_xmlns(self) -> bool:
+        return True
+
     def element_decode(self, data: ElementData, xsd_element: 'XsdElement',
                        xsd_type: Optional[BaseXsdType] = None, level: int = 0) -> Any:
         xsd_type = xsd_type or xsd_element.type
         if xsd_type.simple_type is not None:
-            children = data.text if data.text is not None and data.text != '' else None
+            children = data.text
         else:
             children = self.dict()
             for name, value, xsd_child in self.map_content(data.content):
@@ -66,76 +73,78 @@ class AbderaConverter(XMLSchemaConverter):
                 except AttributeError:
                     children[name] = self.list([children[name], value])
             if not children:
-                children = data.text if data.text is not None and data.text != '' else None
+                children = data.text
 
+        result: Union[List[Any], Dict[str, Any]]
         if data.attributes:
-            if children != []:
-                return self.dict([
-                    ('attributes',
-                     self.dict((k, v) for k, v in self.map_attributes(data.attributes))),
-                    ('children',
-                     self.list([children]) if children is not None else self.list())
-                ])
-            else:
-                return self.dict([
-                    ('attributes',
-                     self.dict((k, v) for k, v in self.map_attributes(data.attributes))),
-                ])
+            result = self.dict([
+                ('attributes',
+                 self.dict((k, v) for k, v in self.map_attributes(data.attributes)))
+            ])
+            if children is not None and children != []:
+                result['children'] = self.list([children])
+
+        elif children is not None:
+            result = children
         else:
-            return children if children is not None else self.list()
+            result = self.list()
+
+        return result if level else self.dict([(self.map_qname(data.tag), result)])
 
     def element_encode(self, obj: Any, xsd_element: 'XsdElement', level: int = 0) -> ElementData:
-        tag = xsd_element.qualified_name if level == 0 else xsd_element.name
-
         if not isinstance(obj, MutableMapping):
-            if obj == []:
+            if not obj and isinstance(obj, MutableSequence):
                 obj = None
-            return ElementData(tag, obj, None, {})
+            return ElementData(xsd_element.name, obj, None, {}, None)
+        elif len(obj) != 1:
+            tag = xsd_element.name
         else:
-            attributes: Dict[str, Any] = {}
-            children: Union[List[Any], MutableMapping[str, Any]]
-
-            try:
-                attributes.update((self.unmap_qname(k, xsd_element.attributes), v)
-                                  for k, v in obj['attributes'].items())
-            except KeyError:
-                children = obj
+            key, value = next(iter(obj.items()))
+            tag = self.unmap_qname(key)
+            if xsd_element.is_matching(tag):
+                obj = value
+            elif not self.namespaces and local_name(tag) == xsd_element.local_name:
+                obj = value
             else:
-                children = obj.get('children', [])
+                tag = xsd_element.name
 
-            if isinstance(children, MutableMapping):
-                children = [children]
-            elif children and not isinstance(children[0], MutableMapping):
-                if len(children) > 1:
-                    raise XMLSchemaValueError("Wrong format")
+        attributes: Dict[str, Any] = {}
+        children: Union[List[Any], MutableMapping[str, Any]]
+
+        try:
+            attributes.update((self.unmap_qname(k, xsd_element.attributes), v)
+                              for k, v in obj['attributes'].items())
+        except KeyError:
+            children = obj
+        else:
+            children = obj.get('children', [])
+
+        if isinstance(children, MutableMapping):
+            children = [children]
+        elif children and not isinstance(children[0], MutableMapping):
+            if len(children) > 1:
+                raise XMLSchemaValueError("Element %r should have only one child" % tag)
+            else:
+                return ElementData(tag, children[0], None, attributes, None)
+
+        content = []
+        for child in children:
+            for name, value in child.items():
+                if not isinstance(value, MutableSequence) or not value:
+                    content.append((self.unmap_qname(name), value))
+                elif isinstance(value[0], (MutableMapping, MutableSequence)):
+                    ns_name = self.unmap_qname(name)
+                    for item in value:
+                        content.append((ns_name, item))
                 else:
-                    return ElementData(tag, children[0], None, attributes)
-
-            content = []
-            for child in children:
-                for name, value in child.items():
-                    if not isinstance(value, MutableSequence) or not value:
-                        content.append((self.unmap_qname(name), value))
-                    elif isinstance(value[0], (MutableMapping, MutableSequence)):
-                        ns_name = self.unmap_qname(name)
-                        for item in value:
-                            content.append((ns_name, item))
-                    else:
-                        xsd_group = xsd_element.type.model_group
-                        if xsd_group is None:
-                            xsd_group = xsd_element.any_type.model_group
-                            assert xsd_group is not None
-
-                        ns_name = self.unmap_qname(name)
-                        for xsd_child in xsd_group.iter_elements():
-                            matched_element = xsd_child.match(ns_name, resolve=True)
-                            if matched_element is not None:
-                                if matched_element.type and matched_element.type.is_list():
-                                    content.append((ns_name, value))
-                                else:
-                                    content.extend((ns_name, item) for item in value)
-                                break
-                        else:
+                    ns_name = self.unmap_qname(name)
+                    xsd_child = xsd_element.match_child(ns_name)
+                    if xsd_child is not None:
+                        if xsd_child.type and xsd_child.type.is_list():
                             content.append((ns_name, value))
+                        else:
+                            content.extend((ns_name, item) for item in value)
+                    else:
+                        content.extend((ns_name, item) for item in value)
 
-            return ElementData(tag, None, content, attributes)
+        return ElementData(tag, None, content, attributes, None)

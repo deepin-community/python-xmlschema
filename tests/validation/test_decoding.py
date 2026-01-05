@@ -1,5 +1,4 @@
-
-#!/usr/bin/env python
+# !/usr/bin/env python
 #
 # Copyright (c), 2016-2020, SISSA (International School for Advanced Studies).
 # All rights reserved.
@@ -11,10 +10,13 @@
 #
 import unittest
 import os
+import base64
 import json
+import math
 from decimal import Decimal
 from collections.abc import MutableMapping, MutableSequence, Set
-import base64
+from textwrap import dedent
+from xml.etree import ElementTree
 
 try:
     import lxml.etree as lxml_etree
@@ -24,12 +26,11 @@ except ImportError:
 from elementpath import datatypes
 import xmlschema
 from xmlschema import XMLSchemaValidationError, ParkerConverter, BadgerFishConverter, \
-    AbderaConverter, JsonMLConverter, ColumnarConverter
+    AbderaConverter, JsonMLConverter, ColumnarConverter, ElementData
 
-from xmlschema.names import XSD_STRING
-from xmlschema.etree import ElementTree
+from xmlschema.names import XSD_STRING, XSI_NIL
 from xmlschema.converters import UnorderedConverter
-from xmlschema.validators import XMLSchema11
+from xmlschema.validators import XMLSchema11, ModelVisitor
 from xmlschema.testing import XsdValidatorTestCase, etree_elements_assert_equal
 
 VEHICLES_DICT = {
@@ -60,6 +61,58 @@ VEHICLES_DICT_ALT = [
     {'@xsi:schemaLocation': 'http://example.com/vehicles vehicles.xsd'}
 ]
 
+VEHICLES_DICT_OVERRIDE_PREFIX_1 = {
+    '@xmlns:vh': 'http://example.com/vehicles',
+    '@xmlns:vh2': 'http://example.com/vehicles',
+    '@xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+    '@xsi:schemaLocation': 'http://example.com/vehicles vehicles.xsd',
+    'vh2:cars': {
+        'vh2:car': [
+            {'@make': 'Porsche', '@model': '911'},
+            {'@make': 'Porsche', '@model': '911'}
+        ]},
+    'vh2:bikes': {
+        'vh2:bike': [
+            {'@make': 'Harley-Davidson', '@model': 'WL'},
+            {'@make': 'Yamaha', '@model': 'XS650'}
+        ]}
+}
+
+VEHICLES_DICT_OVERRIDE_PREFIX_2 = {
+    '@xmlns': 'http://example.com/vehicles',
+    '@xmlns:vh': 'http://example.com/vehicles',
+    '@xmlns:vh-alt': 'http://example.com/vehicles',
+    '@xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+    '@xsi:schemaLocation': 'http://example.com/vehicles vehicles.xsd',
+    'vh-alt:cars': {
+        'vh-alt:car': [
+            {'@make': 'Porsche', '@model': '911'},
+            {'@make': 'Porsche', '@model': '911'}
+        ]},
+    'vh-alt:bikes': {
+        'vh-alt:bike': [
+            {'@make': 'Harley-Davidson', '@model': 'WL'},
+            {'@make': 'Yamaha', '@model': 'XS650'}
+        ]}
+}
+
+VEHICLES_DICT_OVERRIDE_PREFIX_3 = {
+    '@xmlns': 'http://example.com/vehicles',
+    '@xmlns:vh': 'http://example.com/vehicles',
+    '@xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+    '@xsi:schemaLocation': 'http://example.com/vehicles vehicles.xsd',
+    'cars': {
+        'car': [
+            {'@make': 'Porsche', '@model': '911'},
+            {'@make': 'Porsche', '@model': '911'}
+        ]},
+    'bikes': {
+        'bike': [
+            {'@make': 'Harley-Davidson', '@model': 'WL'},
+            {'@make': 'Yamaha', '@model': 'XS650'}
+        ]}
+}
+
 COLLECTION_DICT = {
     '@xmlns:col': 'http://example.com/ns/collection',
     '@xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
@@ -85,13 +138,22 @@ COLLECTION_DICT = {
                 '@id': 'JM',
                 'born': '1893-04-20',
                 'dead': '1983-12-25',
-                'name': u'Joan Miró',
+                'name': 'Joan Miró',
                 'qualification': 'painter, sculptor and ceramicist'
             },
             'position': 2,
             'title': None,
             'year': '1925'
     }]
+}
+
+MENU_DICT = {
+    '@xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+    '@xsi:noNamespaceSchemaLocation': 'menù.xsd',
+    'antipasto': ['Affettati misti', 'Bruschetta', 'Polenta e funghi'],
+    'primo': ['Lasagne', 'Gnocchi al ragù', 'Risotto allo zafferano'],
+    'secondo': ['Tagliata di pollo', 'Cotoletta alla milanese', 'Caprese'],
+    'dolce': ['Crostata ai mirtilli', 'Tiramisù']
 }
 
 COLLECTION_PARKER = {
@@ -105,7 +167,7 @@ COLLECTION_PARKER = {
                 'year': '1886'},
                {'author': {'born': '1893-04-20',
                            'dead': '1983-12-25',
-                           'name': u'Joan Miró',
+                           'name': 'Joan Miró',
                            'qualification': 'painter, sculptor and ceramicist'},
                 'position': 2,
                 'title': None,
@@ -122,18 +184,18 @@ COLLECTION_PARKER_ROOT = {
                                    'year': '1886'},
                                   {'author': {'born': '1893-04-20',
                                               'dead': '1983-12-25',
-                                              'name': u'Joan Miró',
+                                              'name': 'Joan Miró',
                                               'qualification': 'painter, sculptor and ceramicist'},
                                    'position': 2,
                                    'title': None,
                                    'year': '1925'}]}}
 
 COLLECTION_BADGERFISH = {
-    '@xmlns': {
-        'col': 'http://example.com/ns/collection',
-        'xsi': 'http://www.w3.org/2001/XMLSchema-instance'},
     'col:collection': {
         '@xsi:schemaLocation': 'http://example.com/ns/collection collection.xsd',
+        '@xmlns': {
+            'col': 'http://example.com/ns/collection',
+            'xsi': 'http://www.w3.org/2001/XMLSchema-instance'},
         'object': [{
             '@available': True,
             '@id': 'b0836217462',
@@ -154,7 +216,7 @@ COLLECTION_BADGERFISH = {
                     '@id': 'JM',
                     'born': {'$': '1893-04-20'},
                     'dead': {'$': '1983-12-25'},
-                    'name': {'$': u'Joan Miró'},
+                    'name': {'$': 'Joan Miró'},
                     'qualification': {
                         '$': 'painter, sculptor and ceramicist'}
                 },
@@ -166,46 +228,48 @@ COLLECTION_BADGERFISH = {
 }
 
 COLLECTION_ABDERA = {
-    'attributes': {
-        'xsi:schemaLocation': 'http://example.com/ns/collection collection.xsd'
-    },
-    'children': [
-        {
-            'object': [
-                {
-                    'attributes': {'available': True, 'id': 'b0836217462'},
-                    'children': [{
-                        'author': {
-                            'attributes': {'id': 'PAR'},
-                            'children': [{
-                                'born': '1841-02-25',
-                                'dead': '1919-12-03',
-                                'name': 'Pierre-Auguste Renoir',
-                                'qualification': 'painter'}
-                            ]},
-                        'estimation': 10000.0,
-                        'position': 1,
-                        'title': 'The Umbrellas',
-                        'year': '1886'}
-                    ]},
-                {
-                    'attributes': {'available': True, 'id': 'b0836217463'},
-                    'children': [{
-                        'author': {
-                            'attributes': {'id': 'JM'},
-                            'children': [{
-                                'born': '1893-04-20',
-                                'dead': '1983-12-25',
-                                'name': u'Joan Miró',
-                                'qualification': 'painter, sculptor and ceramicist'}
-                            ]},
-                        'position': 2,
-                        'title': [],
-                        'year': '1925'
+    'col:collection': {
+        'attributes': {
+            'xsi:schemaLocation': 'http://example.com/ns/collection collection.xsd'
+        },
+        'children': [
+            {
+                'object': [
+                    {
+                        'attributes': {'available': True, 'id': 'b0836217462'},
+                        'children': [{
+                            'author': {
+                                'attributes': {'id': 'PAR'},
+                                'children': [{
+                                    'born': '1841-02-25',
+                                    'dead': '1919-12-03',
+                                    'name': 'Pierre-Auguste Renoir',
+                                    'qualification': 'painter'}
+                                ]},
+                            'estimation': 10000.0,
+                            'position': 1,
+                            'title': 'The Umbrellas',
+                            'year': '1886'}
+                        ]},
+                    {
+                        'attributes': {'available': True, 'id': 'b0836217463'},
+                        'children': [{
+                            'author': {
+                                'attributes': {'id': 'JM'},
+                                'children': [{
+                                    'born': '1893-04-20',
+                                    'dead': '1983-12-25',
+                                    'name': 'Joan Miró',
+                                    'qualification': 'painter, sculptor and ceramicist'}
+                                ]},
+                            'position': 2,
+                            'title': [],
+                            'year': '1925'
+                        }]
                     }]
-                }]
-        }
-    ]}
+            }
+        ]}
+}
 
 COLLECTION_JSON_ML = [
     'col:collection',
@@ -237,13 +301,12 @@ COLLECTION_JSON_ML = [
      [
          'author',
          {'id': 'JM'},
-         ['name', u'Joan Miró'],
+         ['name', 'Joan Miró'],
          ['born', '1893-04-20'],
          ['dead', '1983-12-25'],
          ['qualification', 'painter, sculptor and ceramicist']
      ]]
 ]
-
 
 COLLECTION_COLUMNAR = {
     'collection': {
@@ -311,6 +374,150 @@ COLLECTION_COLUMNAR_ = {
     }
 }
 
+COLLECTION_XMLNS_PROCESSING_STACKED = {
+    '@xmlns:col1': 'http://example.com/ns/collection',
+    '@xmlns:col': 'http://xmlschema.test/ns',
+    '@xmlns': 'http://xmlschema.test/ns',
+    '@xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+    '@xsi:schemaLocation': 'http://example.com/ns/collection collection5.xsd',
+    'col:object': [
+        {'@xmlns:col': 'http://example.com/ns/collection',
+         '@id': 'b0836217462',
+         '@available': True,
+         'col:position': 1,
+         'col:title': 'The Umbrellas',
+         'col:year': '1886',
+         'col:author': {
+             '@id': 'PAR',
+             'col:name': 'Pierre-Auguste Renoir',
+             'col:born': '1841-02-25',
+             'col:dead': '1919-12-03',
+             'col:qualification': 'painter'
+         },
+         'col:estimation': Decimal('10000.00')}],
+    'object': [
+        {'@xmlns': 'http://example.com/ns/collection',
+         '@id': 'b0836217463',
+         '@available': True,
+         'position': 2,
+         'title': None,
+         'year': '1925',
+         'author': {
+            '@id': 'JM',
+            'name': 'Joan Miró',
+            'born': '1893-04-20',
+            'dead': '1983-12-25',
+            'qualification': 'painter, sculptor and ceramicist'
+         }}
+    ]
+}
+
+COLLECTION_XMLNS_PROCESSING_COLLAPSED = {
+    '@xmlns': 'http://xmlschema.test/ns',
+    '@xmlns:col': 'http://xmlschema.test/ns',
+    '@xmlns:col0': 'http://example.com/ns/collection',
+    '@xmlns:col1': 'http://example.com/ns/collection',
+    '@xmlns:default': 'http://example.com/ns/collection',
+    '@xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+    '@xsi:schemaLocation': 'http://example.com/ns/collection collection5.xsd',
+    'col1:object': [
+        {'@id': 'b0836217462',
+         '@available': True,
+         'col1:position': 1,
+         'col1:title': 'The Umbrellas',
+         'col1:year': '1886',
+         'col1:author': {
+             '@id': 'PAR',
+             'col1:name': 'Pierre-Auguste Renoir',
+             'col1:born': '1841-02-25',
+             'col1:dead': '1919-12-03',
+             'col1:qualification': 'painter'
+         },
+         'col1:estimation': Decimal('10000.00')},
+        {'@id': 'b0836217463',
+         '@available': True,
+         'col1:position': 2,
+         'col1:title': None,
+         'col1:year': '1925',
+         'col1:author': {
+            '@id': 'JM',
+            'col1:name': 'Joan Miró',
+            'col1:born': '1893-04-20',
+            'col1:dead': '1983-12-25',
+            'col1:qualification': 'painter, sculptor and ceramicist'
+         }}
+    ]
+}
+
+COLLECTION_XMLNS_PROCESSING_ROOT_ONLY = {
+    '@xmlns': 'http://xmlschema.test/ns',
+    '@xmlns:col': 'http://xmlschema.test/ns',
+    '@xmlns:col1': 'http://example.com/ns/collection',
+    '@xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+    '@xsi:schemaLocation': 'http://example.com/ns/collection collection5.xsd',
+    'col1:object': [
+        {'@id': 'b0836217462',
+         '@available': True,
+         'col1:position': 1,
+         'col1:title': 'The Umbrellas',
+         'col1:year': '1886',
+         'col1:author': {
+             '@id': 'PAR',
+             'col1:name': 'Pierre-Auguste Renoir',
+             'col1:born': '1841-02-25',
+             'col1:dead': '1919-12-03',
+             'col1:qualification': 'painter'
+         },
+         'col1:estimation': Decimal('10000.00')},
+        {'@id': 'b0836217463',
+         '@available': True,
+         'col1:position': 2,
+         'col1:title': None,
+         'col1:year': '1925',
+         'col1:author': {
+            '@id': 'JM',
+            'col1:name': 'Joan Miró',
+            'col1:born': '1893-04-20',
+            'col1:dead': '1983-12-25',
+            'col1:qualification': 'painter, sculptor and ceramicist'
+         }}
+    ]
+}
+
+
+COLLECTION_XMLNS_PROCESSING_NONE = {
+    '@xmlns:col-alt': 'http://example.com/ns/collection',
+    '@xmlns:xsi-alt': 'http://www.w3.org/2001/XMLSchema-instance',
+    '@xsi-alt:schemaLocation': 'http://example.com/ns/collection collection5.xsd',
+    'col-alt:object': [
+        {'@id': 'b0836217462',
+         '@available': True,
+         'col-alt:position': 1,
+         'col-alt:title': 'The Umbrellas',
+         'col-alt:year': '1886',
+         'col-alt:author': {
+             '@id': 'PAR',
+             'col-alt:name': 'Pierre-Auguste Renoir',
+             'col-alt:born': '1841-02-25',
+             'col-alt:dead': '1919-12-03',
+             'col-alt:qualification': 'painter'
+         },
+         'col-alt:estimation': Decimal('10000.00')},
+        {'@id': 'b0836217463',
+         '@available': True,
+         'col-alt:position': 2,
+         'col-alt:title': None,
+         'col-alt:year': '1925',
+         'col-alt:author': {
+            '@id': 'JM',
+            'col-alt:name': 'Joan Miró',
+            'col-alt:born': '1893-04-20',
+            'col-alt:dead': '1983-12-25',
+            'col-alt:qualification': 'painter, sculptor and ceramicist'
+         }}
+    ]
+}
+
 DATA_DICT = {
     '@xmlns:ns': 'ns',
     '@xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
@@ -322,11 +529,13 @@ DATA_DICT = {
     'decimal_value': [Decimal('1')],
     'hexbin': 'AABBCCDD',
     'menù': 'baccalà mantecato',
+    'qname': 'ns:foo',
     'complex_boolean': [
         {'$': True, '@Type': 2}, {'$': False, '@Type': 1}, True, False
     ],
     'simple_boolean': [True, False],
     'date_and_time': '2020-03-05T23:04:10.047',  # xs:dateTime is not decoded for default
+    'list_of_floats': [float('inf'), float('-inf')],
 }
 
 
@@ -373,7 +582,9 @@ class TestDecoding(XsdValidatorTestCase):
         xml_dict = self.vh_schema.to_dict(vh_xml_tree, namespaces=self.vh_namespaces)
         self.assertEqual(xml_dict, VEHICLES_DICT)
 
-        xml_dict = xmlschema.to_dict(vh_xml_tree, self.vh_schema.url, namespaces=self.vh_namespaces)
+        xml_dict = xmlschema.to_dict(
+            vh_xml_tree, self.vh_schema.url, namespaces=self.vh_namespaces
+        )
         self.assertEqual(xml_dict, VEHICLES_DICT)
 
         xml_dict = self.col_schema.to_dict(col_xml_tree)
@@ -469,18 +680,21 @@ class TestDecoding(XsdValidatorTestCase):
             </xs:schema>""")
 
         xml_data = '<root xmlns:ns0="http://xmlschema.test/0">ns0:foo</root>'
-        self.assertEqual(schema.decode(xml_data), 'ns0:foo')
+        self.assertEqual(schema.decode(xml_data),
+                         {'@xmlns:ns0': 'http://xmlschema.test/0', '$': 'ns0:foo'})
 
         self.assertEqual(schema.decode('<root>foo</root>'), 'foo')
 
         with self.assertRaises(XMLSchemaValidationError) as ctx:
             schema.decode('<root>ns0:foo</root>')
         self.assertIn("failed validating 'ns0:foo'", str(ctx.exception))
-        self.assertIn("Reason: unmapped prefix 'ns0' on QName", str(ctx.exception))
+        self.assertIn("Reason: unmapped prefix 'ns0' in a QName", str(ctx.exception))
         self.assertIn("Path: /root", str(ctx.exception))
 
         xml_data = '<root name="ns0:bar" xmlns:ns0="http://xmlschema.test/0">ns0:foo</root>'
-        self.assertEqual(schema.decode(xml_data), {'@name': 'ns0:bar', '$': 'ns0:foo'})
+        self.assertEqual(schema.decode(xml_data), {
+            '@xmlns:ns0': 'http://xmlschema.test/0', '@name': 'ns0:bar', '$': 'ns0:foo'
+        })
 
         # Check reverse encoding
         obj = schema.decode(xml_data, converter=JsonMLConverter)
@@ -490,7 +704,7 @@ class TestDecoding(XsdValidatorTestCase):
         with self.assertRaises(XMLSchemaValidationError) as ctx:
             schema.decode('<root name="ns0:bar">foo</root>')
         self.assertIn("failed validating 'ns0:bar'", str(ctx.exception))
-        self.assertIn("unmapped prefix 'ns0' on QName", str(ctx.exception))
+        self.assertIn("unmapped prefix 'ns0' in a QName", str(ctx.exception))
         self.assertIn("Path: /root", str(ctx.exception))
 
     def test_json_dump_and_load(self):
@@ -629,8 +843,8 @@ class TestDecoding(XsdValidatorTestCase):
     def test_non_global_schema_path(self):
         # Issue #157
         xs = self.schema_class("""<?xml version="1.0" encoding="UTF-8"?>
-        <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" 
-                xmlns:foo="http://example.com/foo" 
+        <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+                xmlns:foo="http://example.com/foo"
                 targetNamespace="http://example.com/foo">
             <xs:complexType name="type1">
                 <xs:sequence>
@@ -677,9 +891,15 @@ class TestDecoding(XsdValidatorTestCase):
         self.assertEqual(xd['decimal_value'], ['abc'])
 
     def test_datatypes(self):
+        xd = self.st_schema.to_dict(self.casepath('features/decoder/data.xml'))
+        self.assertDictEqual(xd, DATA_DICT)
+
         xt = ElementTree.parse(self.casepath('features/decoder/data.xml'))
         xd = self.st_schema.to_dict(xt, namespaces=self.default_namespaces)
-        self.assertEqual(xd, DATA_DICT)
+        self.assertNotEqual(xd, DATA_DICT)
+        self.assertIn('@xmlns:xsi', xd)
+        self.assertIn('@xmlns:tns', xd)
+        self.assertIn('@xmlns:ns', xd)
 
     def test_datetime_types(self):
         xs = self.get_schema('<xs:element name="dt" type="xs:dateTime"/>')
@@ -757,7 +977,7 @@ class TestDecoding(XsdValidatorTestCase):
                 self.col_xml_file, converter=ColumnarConverter, attr_prefix='-',
             )
         self.assertEqual(str(ctx.exception),
-                         "attr_prefix can be the empty string or a single/double underscore")
+                         "'attr_prefix' can be the empty string or a single/double underscore")
 
     def test_dict_granularity(self):
         """Based on Issue #22, test to make sure an xsd indicating list with
@@ -864,8 +1084,8 @@ class TestDecoding(XsdValidatorTestCase):
         self.assertIsInstance(obj, str)
 
         obj = xs.decode('<hex> 9AFD </hex>', binary_types=True)
-        self.assertEqual(obj, '9AFD')
         self.assertIsInstance(obj, datatypes.HexBinary)
+        self.assertEqual(obj.value, b'9AFD')
 
         xs = self.get_schema('<xs:attribute name="hex" type="xs:hexBinary"/>')
 
@@ -874,8 +1094,8 @@ class TestDecoding(XsdValidatorTestCase):
         self.assertIsInstance(obj, str)
 
         obj = xs.attributes['hex'].decode(' 9AFD ', binary_types=True)
-        self.assertEqual(obj, '9AFD')
         self.assertIsInstance(obj, datatypes.HexBinary)
+        self.assertEqual(obj.value, b'9AFD')
 
     def test_base64_binary_type(self):
         base64_code_type = self.st_schema.types['base64Code']
@@ -889,7 +1109,7 @@ class TestDecoding(XsdValidatorTestCase):
         xs = self.get_schema('<xs:attribute name="b64" type="xs:base64Binary"/>')
 
         obj = xs.attributes['b64'].decode(base64_value.decode())
-        self.assertEqual(obj, expected_value)
+        self.assertEqual(obj, str(expected_value))
         self.assertIsInstance(obj, str)
 
         obj = xs.attributes['b64'].decode(base64_value.decode(), binary_types=True)
@@ -899,11 +1119,11 @@ class TestDecoding(XsdValidatorTestCase):
         # Element
         xs = self.get_schema('<xs:element name="b64" type="xs:base64Binary"/>')
 
-        obj = xs.decode('<b64>{}</b64>'.format(base64_value.decode()))
-        self.assertEqual(obj, expected_value)
+        obj = xs.decode(f'<b64>{base64_value.decode()}</b64>')
+        self.assertEqual(obj, str(expected_value))
         self.assertIsInstance(obj, str)
 
-        obj = xs.decode('<b64>{}</b64>'.format(base64_value.decode()), binary_types=True)
+        obj = xs.decode(f'<b64>{base64_value.decode()}</b64>', binary_types=True)
         self.assertEqual(obj, expected_value)
         self.assertIsInstance(obj, datatypes.Base64Binary)
 
@@ -911,13 +1131,13 @@ class TestDecoding(XsdValidatorTestCase):
                           datatypes.Base64Binary('YWJjZWZnaA=='))
         self.check_decode(base64_code_type, b' Y  W J j ZWZ\t\tn\na A= =',
                           datatypes.Base64Binary('Y W J j ZWZ n a A= ='))
-        self.check_decode(base64_code_type, u' Y  W J j ZWZ\t\tn\na A= =',
+        self.check_decode(base64_code_type, ' Y  W J j ZWZ\t\tn\na A= =',
                           datatypes.Base64Binary('Y W J j ZWZ n a A= ='))
         self.check_decode(base64_code_type, base64.b64encode(b'abcefghi'),
                           datatypes.Base64Binary('YWJjZWZnaGk='))
 
-        self.check_decode(base64_code_type, u'YWJjZWZnaA=', XMLSchemaValidationError)
-        self.check_decode(base64_code_type, u'YWJjZWZna$==', XMLSchemaValidationError)
+        self.check_decode(base64_code_type, 'YWJjZWZnaA=', XMLSchemaValidationError)
+        self.check_decode(base64_code_type, 'YWJjZWZna$==', XMLSchemaValidationError)
 
         base64_length4_type = self.st_schema.types['base64Length4']
         self.check_decode(base64_length4_type, base64.b64encode(b'abc'),
@@ -975,14 +1195,93 @@ class TestDecoding(XsdValidatorTestCase):
         obj = xsd_schema.decode(xml_string_2, use_defaults=False)
         self.check_etree_elements(ElementTree.fromstring(xml_string_2), xsd_schema.encode(obj))
 
+    def test_keep_empty(self):
+        schema = self.schema_class(self.casepath('issues/issue_322/issue_322.xsd'))
+        xml_file = self.casepath('issues/issue_322/issue_322.xml')
+
+        data = schema.decode(xml_file)
+        self.assertEqual(data, {
+            '@xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+            'emptystring': None,
+            'nillstring': {'@xsi:nil': 'true'}
+        })
+
+        data = schema.decode(xml_file, keep_empty=True)
+        self.assertEqual(data, {
+            '@xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+            'emptystring': '',
+            'nillstring': {'@xsi:nil': 'true'}
+        })
+
+        schema = self.schema_class(dedent("""\
+        <?xml version="1.0"?>
+        <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+          <xs:element name="note">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:element name="emptiable" type="xs:string"/>
+                <xs:element name="filled">
+                  <xs:simpleType>
+                    <xs:restriction base="xs:string">
+                      <xs:minLength value="1"/>
+                    </xs:restriction>
+                  </xs:simpleType>
+                </xs:element>
+                <xs:element name="number" type="xs:int"/>
+              </xs:sequence>
+            </xs:complexType>
+          </xs:element>
+        </xs:schema>"""))
+
+        xml_data = "<note><emptiable/><filled/><number/></note>"
+        data, errors = schema.decode(xml_data, validation='lax', keep_empty=True)
+        self.assertEqual(data, {'emptiable': '', 'filled': '', 'number': None})
+        self.assertEqual(len(errors), 2)
+
+        data = schema.decode(xml_data, validation='skip', keep_empty=True)
+        self.assertEqual(data, {'emptiable': '', 'filled': '', 'number': ''})
+
+    def test_element_hook__issue_322(self):
+        schema = self.schema_class(self.casepath('issues/issue_322/issue_322.xsd'))
+        xml_file = self.casepath('issues/issue_322/issue_322.xml')
+
+        def element_hook(element_data: ElementData, *_args):
+            if not element_data.attributes:
+                return element_data
+
+            return ElementData(
+                element_data.tag,
+                element_data.text,
+                element_data.content,
+                [x for x in element_data.attributes if x[0] != XSI_NIL],
+                None
+            )
+
+        data = schema.decode(xml_file, element_hook=element_hook)
+        self.assertEqual(data, {
+            '@xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+            'emptystring': None,
+            'nillstring': None,
+        })
+
+        # Resolution for issue 322
+        data = schema.decode(xml_file, keep_empty=True, element_hook=element_hook)
+        self.assertEqual(data, {
+            '@xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
+            'emptystring': '',
+            'nillstring': None,
+        })
+
     def test_default_namespace__issue_077(self):
         xs = self.schema_class("""<?xml version="1.0" encoding="UTF-8"?>
-        <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+        <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
             targetNamespace="http://example.com/foo">
           <xs:element name="foo" type="xs:string" />
         </xs:schema>""")
         self.assertEqual(xs.to_dict("""<foo xmlns="http://example.com/foo">bar</foo>""",
-                                    path='/foo', namespaces={'': 'http://example.com/foo'}), 'bar')
+                                    path='/foo', namespaces={'': 'http://example.com/foo'}),
+                         {'@xmlns': 'http://example.com/foo', '$': 'bar'})
+
         self.assertEqual(xs.to_dict("""<foo>bar</foo>""",
                                     path='/foo', namespaces={'': 'http://example.com/foo'}), None)
 
@@ -997,7 +1296,7 @@ class TestDecoding(XsdValidatorTestCase):
     def test_union_types__issue_103(self):
         decimal_or_nan = self.st_schema.types['myType']
         self.check_decode(decimal_or_nan, '95.0', Decimal('95.0'))
-        self.check_decode(decimal_or_nan, 'NaN', u'NaN')
+        self.check_decode(decimal_or_nan, 'NaN', 'NaN')
 
     def test_default_values__issue_108(self):
         # From issue #108
@@ -1071,22 +1370,22 @@ class TestDecoding(XsdValidatorTestCase):
         self.assertFalse(schema.is_valid(self.casepath('issues/issue_204/issue_204_2.xml')))
 
         data = schema.decode(self.casepath('issues/issue_204/issue_204_2.xml'), validation='lax')
-        self.assertEqual(set(x for x in data[0] if x[0] != '@'), {'child2', 'child5'})
+        self.assertEqual({x for x in data[0] if x[0] != '@'}, {'child2', 'child5'})
 
         data = schema.decode(self.casepath('issues/issue_204/issue_204_3.xml'), validation='lax')
-        self.assertEqual(set(x for x in data[0] if x[0] != '@'), {'child2', 'child5'})
+        self.assertEqual({x for x in data[0] if x[0] != '@'}, {'child2', 'child5'})
 
         data = schema.decode(self.casepath('issues/issue_204/issue_204_3.xml'),
                              validation='lax', keep_unknown=True)
-        self.assertEqual(set(x for x in data[0] if x[0] != '@'), {'child2', 'unknown', 'child5'})
+        self.assertEqual({x for x in data[0] if x[0] != '@'}, {'child2', 'unknown', 'child5'})
         self.assertEqual(data[0]['unknown'], {'a': ['1'], 'b': [None]})
 
         data = schema.decode(self.casepath('issues/issue_204/issue_204_2.xml'), validation='skip')
-        self.assertEqual(set(x for x in data if x[0] != '@'), {'child2', 'child5'})
+        self.assertEqual({x for x in data if x[0] != '@'}, {'child2', 'child5'})
 
         data = schema.decode(self.casepath('issues/issue_204/issue_204_3.xml'),
                              validation='skip', keep_unknown=True)
-        self.assertEqual(set(x for x in data if x[0] != '@'), {'child2', 'unknown', 'child5'})
+        self.assertEqual({x for x in data if x[0] != '@'}, {'child2', 'unknown', 'child5'})
         self.assertEqual(data['unknown'], {'a': ['1'], 'b': [None]})
 
     def test_error_message__issue_115(self):
@@ -1201,6 +1500,322 @@ class TestDecoding(XsdValidatorTestCase):
         self.assertEqual(obj, 'øæå')
         self.assertIsInstance(obj, str)
         self.assertEqual(json_data.encode("utf-8"), b'"\\u00f8\\u00e6\\u00e5"')
+
+    def test_float_decoding(self):
+        for float_type in [self.schema_class.meta_schema.types['float'],
+                           self.schema_class.meta_schema.types['double']]:
+            self.assertAlmostEqual(float_type.decode('-1'), -1.0)
+            self.assertAlmostEqual(float_type.decode('19.7'), 19.7)
+            self.assertAlmostEqual(float_type.decode('INF'), float('inf'))
+            self.assertAlmostEqual(float_type.decode('-INF'), float('-inf'))
+            self.assertNotAlmostEqual(float_type.decode('INF'), float('-inf'))
+            self.assertTrue(math.isnan(float_type.decode('NaN')))
+
+    def test_no_process_namespaces__issue_314(self):
+        xsd_file = self.casepath('issues/issue_314/issue_314.xsd')
+        xml_file = self.casepath('issues/issue_314/issue_314.xml')
+        schema = self.schema_class(xsd_file)
+
+        result = schema.decode(xml_file)
+        self.assertEqual(
+            result,
+            {'@xmlns:p': 'my_namespace',
+             '@xmlns:b': 'http://www.w3.org/2001/XMLSchema-instance',
+             'p:container': {
+                 'p:item': [{
+                     '@b:type': 'p:ConcreteContainterItemInfo',
+                     '@attr_2': 'value_2'}
+                 ]}}
+        )
+
+        result = schema.decode(xml_file, process_namespaces=False)
+        self.assertEqual(
+            result,
+            {'{my_namespace}container': {
+                '{my_namespace}item': [{
+                    '@{http://www.w3.org/2001/XMLSchema-instance}type':
+                        'p:ConcreteContainterItemInfo',
+                    '@attr_2': 'value_2'}]}}
+        )
+
+    def test_mixed_content_decode__issue_334(self):
+        schema = self.schema_class("""
+        <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+
+            <xs:complexType name="mixedContentType" mixed="true">
+                <xs:sequence>
+                    <xs:element name="elem1" maxOccurs="unbounded"/>
+                </xs:sequence>
+            </xs:complexType>
+
+            <xs:element name="foo">
+              <xs:complexType>
+                <xs:complexContent>
+                  <xs:extension base="mixedContentType">
+                    <xs:attribute name="bar" type="xs:string" />
+                  </xs:extension>
+                </xs:complexContent>
+              </xs:complexType>
+            </xs:element>
+
+            <xs:element name="root" type="mixedContentType" />
+
+        </xs:schema>
+        """)
+
+        result = schema.decode('<root>text1<elem1/>tail1<elem1/>tail2</root>')
+        self.assertEqual(result, {'elem1': [None, None]})
+
+        result = schema.decode('<root>text1<elem1/>tail1<elem1/>tail2</root>', cdata_prefix='#')
+        self.assertEqual(result, {'#1': 'text1',
+                                  'elem1': [None, None],
+                                  '#2': 'tail1',
+                                  '#3': 'tail2'})
+        result = schema.decode('<root>text1<elem1/>tail1<elem1/>tail2</root>', cdata_prefix='')
+        self.assertEqual(result, {'1': 'text1',
+                                  'elem1': [None, None],
+                                  '2': 'tail1',
+                                  '3': 'tail2'})
+
+        xsd_file = self.casepath('issues/issue_334/issue_334.xsd')
+        xml_file = self.casepath('issues/issue_334/issue_334.xml')
+        xs = self.schema_class(xsd_file)
+        result = xs.decode(xml_file)
+        body_text = result['Demonstrative_Example'][0]['Body_Text']
+
+        expected = ['The snippet of code below establishes a new cookie to hold the sessionID.',
+                    'The HttpOnly flag is not set for the cookie. An attacker who can perform '
+                    'XSS could insert malicious script such as:',
+                    'When the client loads and executes this script, it makes a request to the '
+                    'attacker-controlled web site. The attacker can then log the request and '
+                    'steal the cookie.',
+                    'To mitigate the risk, use the setHttpOnly(true) method.']
+        self.assertListEqual(body_text, expected)
+
+        result = xs.decode(xml_file, preserve_root=True)
+        body_text = result['Demonstrative_Examples']['Demonstrative_Example'][0]['Body_Text']
+        self.assertListEqual(body_text, expected)
+
+    def test_fill_missing_elements__issue_341(self):
+        xsd_file = self.casepath('issues/issue_341/issue_341.xsd')
+        xml_file = self.casepath('issues/issue_341/issue_341.xml')
+        schema = self.schema_class(xsd_file)
+
+        expected = {'TEST_EL': [
+            {'@Date': '2022-10-03',
+             'TEST_EL_2': {
+                 'exists_in_xml': {
+                     '@test_attr': 'test_value_attr', '@test_attr_2': None
+                 }
+             }}
+        ]}
+        xml_dict = schema.decode(xml_file, fill_missing=True)
+        self.assertDictEqual(xml_dict, expected)
+
+        def fill_missing_content(element_data: ElementData, _xsd_element, xsd_type):
+            group = xsd_type.model_group
+            if group is None:
+                return element_data  # an element with simple content
+
+            filled_content = []
+            model = ModelVisitor(group)
+            xsd_element = None
+            for name, value, xsd_element in element_data.content:
+                if isinstance(name, int) or xsd_element is None:
+                    filled_content.append((name, value, xsd_element))
+                    continue
+
+                while model.element is not None:
+                    if model.element is xsd_element:
+                        filled_content.append((name, value, xsd_element))
+                        for _err in model.advance(True):
+                            pass
+                        break
+
+                    if model.element.max_occurs != 0:
+                        filled_content.append((model.element.name, None, model.element))
+                    for _err in model.advance(False):
+                        pass
+                else:
+                    filled_content.append((name, value, xsd_element))
+
+            while model.element is not None:
+                if model.element is not xsd_element and model.element.max_occurs != 0:
+                    filled_content.append((model.element.name, None, model.element))
+                for _err in model.advance(False):
+                    pass
+
+            return ElementData(
+                element_data.tag,
+                element_data.text,
+                filled_content,
+                element_data.attributes,
+                None
+            )
+
+        expected = {'TEST_EL': [
+            {'@Date': '2022-10-03',
+             'TEST_EL_2': {
+                 'exists_in_xml': {
+                     '@test_attr': 'test_value_attr', '@test_attr_2': None
+                 },
+                 'not_exists_in_xml': None
+             }}
+        ]}
+        xml_dict = schema.decode(xml_file, element_hook=fill_missing_content, fill_missing=True)
+        self.assertDictEqual(xml_dict, expected)
+
+        # Resolving more complex schemas requires more checks in hook function
+        xsd_file = self.casepath('issues/issue_341/issue_341-ext.xsd')
+        schema = self.schema_class(xsd_file)
+
+        expected = {'TEST_EL': [
+            {'@Date': '2022-10-03',
+             'TEST_EL_2': {
+                 'exists_in_xml': {
+                     '@test_attr': 'test_value_attr', '@test_attr_2': None
+                 },
+                 'not_exists_in_xml': None,
+                 'choice_elem1': None,
+                 'choice_elem2': None,  # this is wrong (at most one element for a choice)
+             }}
+        ]}
+        xml_dict = schema.decode(xml_file, element_hook=fill_missing_content, fill_missing=True)
+        self.assertDictEqual(xml_dict, expected)
+
+    def test_decoding_non_unicode_files(self):
+        # Using cp1252 encoded XSD
+        schema_file = self.casepath('examples/menù/menù-cp1252.xsd')
+        schema = self.schema_class(schema_file)
+
+        xml_file = self.casepath('examples/menù/menù-cp1252.xml')
+        self.assertDictEqual(schema.decode(xml_file), MENU_DICT)
+
+        xml_file = self.casepath('examples/menù/menù-ascii.xml')
+        with self.assertRaises(ElementTree.ParseError):
+            schema.decode(xml_file)  # Invalid XML file (entity in a tag name)
+
+        xml_file = self.casepath('examples/menù/menù.xml')
+        self.assertDictEqual(schema.decode(xml_file), MENU_DICT)
+
+        # Using ASCII encoded XSD
+        schema_file = self.casepath('examples/menù/menù-ascii.xsd')
+        schema = self.schema_class(schema_file)
+
+        xml_file = self.casepath('examples/menù/menù-cp1252.xml')
+        self.assertDictEqual(schema.decode(xml_file), MENU_DICT)
+
+        xml_file = self.casepath('examples/menù/menù.xml')
+        self.assertDictEqual(schema.decode(xml_file), MENU_DICT)
+
+    def test_xml_to_json_serialization(self):
+        xml_file = self.casepath('serialization/document.xml')
+
+        obj = xmlschema.to_json(
+            xml_file,
+            validation='skip',
+            converter=xmlschema.ParkerConverter,
+            xmlns_processing='stacked',
+        )
+        with open(self.casepath('serialization/parker.json')) as fp:
+            json_data = json.load(fp)
+
+        self.assertDictEqual(json.loads(obj), json_data)
+
+        obj = xmlschema.to_json(
+            xml_file,
+            validation='skip',
+            converter=xmlschema.BadgerFishConverter,
+            xmlns_processing='stacked',
+        )
+        with open(self.casepath('serialization/badgerfish.json')) as fp:
+            json_data = json.load(fp)
+
+        self.assertDictEqual(json.loads(obj), json_data)
+
+        obj = xmlschema.to_json(
+            xml_file,
+            validation='skip',
+            converter=xmlschema.JsonMLConverter,
+            xmlns_processing='stacked',
+        )
+        with open(self.casepath('serialization/jsonml.json')) as fp:
+            json_data = json.load(fp)
+
+        self.assertListEqual(json.loads(obj), json_data)
+
+        obj = xmlschema.to_json(
+            xml_file,
+            validation='skip',
+            converter=xmlschema.AbderaConverter,
+            xmlns_processing='stacked',
+        )
+        with open(self.casepath('serialization/abdera.json')) as fp:
+            json_data = json.load(fp)
+
+        self.assertDictEqual(json.loads(obj), json_data)
+
+    def test_xmlns_processing_argument(self):
+        xsd_file = self.casepath('examples/collection/collection5.xsd')
+        xml_file = self.casepath('examples/collection/collection-redef-xmlns.xml')
+
+        schema = self.schema_class(xsd_file)
+        self.assertTrue(schema.is_valid(xml_file))
+
+        obj = schema.decode(xml_file)
+        self.assertDictEqual(obj, COLLECTION_XMLNS_PROCESSING_STACKED)
+
+        obj = schema.decode(xml_file, xmlns_processing='stacked')
+        self.assertDictEqual(obj, COLLECTION_XMLNS_PROCESSING_STACKED)
+
+        obj = schema.decode(xml_file, xmlns_processing='collapsed')
+        self.assertDictEqual(obj, COLLECTION_XMLNS_PROCESSING_COLLAPSED)
+
+        obj = schema.decode(xml_file, xmlns_processing='root-only')
+        self.assertDictEqual(obj, COLLECTION_XMLNS_PROCESSING_ROOT_ONLY)
+
+        namespaces = {'xsi-alt': 'http://www.w3.org/2001/XMLSchema-instance',
+                      'col-alt': 'http://example.com/ns/collection'}
+        obj = schema.decode(xml_file, xmlns_processing='none', namespaces=namespaces)
+        self.assertDictEqual(obj, COLLECTION_XMLNS_PROCESSING_NONE)
+
+        with self.assertRaises(ValueError):
+            schema.decode(xml_file, xmlns_processing='precise')
+
+        with self.assertRaises(TypeError):
+            schema.decode(xml_file, xmlns_processing=True)
+
+    def test_namespaces_argument(self):
+        namespaces = {'vh': 'http://example.com/vehicles'}
+        obj = self.vh_schema.decode(self.vh_xml_file, namespaces=namespaces)
+        self.assertDictEqual(obj, VEHICLES_DICT)
+
+        namespaces = {'vh2': 'http://example.com/vehicles'}
+        obj = self.vh_schema.decode(self.vh_xml_file, namespaces=namespaces)
+        self.assertDictEqual(obj, VEHICLES_DICT_OVERRIDE_PREFIX_1)
+
+        namespaces = {'vh-alt': 'http://example.com/vehicles',
+                      '': 'http://example.com/vehicles'}
+        obj = self.vh_schema.decode(self.vh_xml_file, namespaces=namespaces)
+        self.assertDictEqual(obj, VEHICLES_DICT_OVERRIDE_PREFIX_2)
+
+        namespaces = {'': 'http://example.com/vehicles'}
+        obj = self.vh_schema.decode(self.vh_xml_file, namespaces=namespaces)
+        self.assertDictEqual(obj, VEHICLES_DICT_OVERRIDE_PREFIX_3)
+
+    def test_validation_hook_argument(self):
+        tags_num = 1
+
+        def stop_decoding(_e, _xsd_element):
+            nonlocal tags_num
+            if tags_num >= 10:
+                return True
+            tags_num += 1
+            return False
+
+        obj = self.col_schema.decode(self.col_xml_file, validation_hook=stop_decoding)
+        self.assertIn('object', obj)
+        self.assertEqual(len(obj['object']), 1)
 
 
 class TestDecoding11(TestDecoding):

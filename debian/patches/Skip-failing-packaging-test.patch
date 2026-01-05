@@ -6,44 +6,27 @@ Not needed for Debian, and skipping seems easier than fixing.
 
 Forwarded: not-needed
 ---
- tests/test_package.py | 1 +
- 1 file changed, 1 insertion(+)
+ tests/test_package.py          | 1 +
+ tests/test_xpath.py            | 2 ++
+ xmlschema/testing/_builders.py | 5 +++++
+ 3 files changed, 8 insertions(+)
 
-Index: python-xmlschema/xmlschema/testing/_builders.py
-===================================================================
---- python-xmlschema.orig/xmlschema/testing/_builders.py
-+++ python-xmlschema/xmlschema/testing/_builders.py
-@@ -17,6 +17,7 @@ import logging
- import importlib
- import tempfile
- import warnings
-+import unittest
+diff --git a/tests/test_package.py b/tests/test_package.py
+index 9c1175a..5c53020 100644
+--- a/tests/test_package.py
++++ b/tests/test_package.py
+@@ -19,5 +19,6 @@ import importlib
  
- try:
-     import lxml.etree as lxml_etree
-@@ -197,6 +198,8 @@ def make_schema_test_class(test_file, te
-                         lxml_schema_time, xmlschema_time, xsd_file, self.__class__.__name__
-                     ))
  
-+        @unittest.skip(
-+            "Requires network access, not granted during the Debian build")
-         def test_xsd_file(self):
-             if inspect:
-                 SchemaObserver.clear()
-@@ -609,6 +612,8 @@ def make_validation_test_class(test_file
-                 finally:
-                     os.chdir(cwd)
++@unittest.skip("breaks Debian autopkgtest")
+ class TestPackaging(unittest.TestCase):
  
-+        @unittest.skip(
-+            "Requires network access, not granted during the Debian build")
-         def test_xml_document_validation(self):
-             if not validation_only:
-                 self.check_decoding_with_element_tree()
-Index: python-xmlschema/tests/test_xpath.py
-===================================================================
---- python-xmlschema.orig/tests/test_xpath.py
-+++ python-xmlschema/tests/test_xpath.py
-@@ -58,6 +58,8 @@ class XMLSchemaProxyTest(unittest.TestCa
+     @classmethod
+diff --git a/tests/test_xpath.py b/tests/test_xpath.py
+index 4914c7b..b0b6402 100644
+--- a/tests/test_xpath.py
++++ b/tests/test_xpath.py
+@@ -58,6 +58,8 @@ class XMLSchemaProxyTest(unittest.TestCase):
          schema_proxy2.bind_parser(parser)
          self.assertIs(parser.schema, schema_proxy2)
  
@@ -52,3 +35,33 @@ Index: python-xmlschema/tests/test_xpath.py
      def test_get_context_method(self):
          schema_proxy = XMLSchemaProxy(self.xs1)
          context = schema_proxy.get_context()
+diff --git a/xmlschema/testing/_builders.py b/xmlschema/testing/_builders.py
+index fbc3ef9..d9c1496 100644
+--- a/xmlschema/testing/_builders.py
++++ b/xmlschema/testing/_builders.py
+@@ -17,6 +17,7 @@ import time
+ import logging
+ import tempfile
+ import warnings
++import unittest
+ from importlib import util as importlib_util
+ from xml.etree import ElementTree
+ 
+@@ -202,6 +203,8 @@ def make_schema_test_class(test_file, test_args, test_num, schema_class, check_w
+                         lxml_schema_time, xmlschema_time, xsd_file, self.__class__.__name__
+                     ))
+ 
++        @unittest.skip(
++            "Requires network access, not granted during the Debian build")
+         def test_xsd_file(self):
+             if inspect:
+                 SchemaObserver.clear()
+@@ -640,6 +643,8 @@ def make_validation_test_class(test_file, test_args, test_num, schema_class, che
+                 finally:
+                     os.chdir(cwd)
+ 
++        @unittest.skip(
++            "Requires network access, not granted during the Debian build")
+         def test_xml_document_validation(self):
+             if not validation_only:
+                 self.check_decoding_with_element_tree()
