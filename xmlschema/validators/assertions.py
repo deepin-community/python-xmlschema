@@ -8,14 +8,19 @@
 # @author Davide Brunato <brunato@sissa.it>
 #
 import threading
-from typing import TYPE_CHECKING, cast, Any, Dict, Iterator, Optional, Union
-from elementpath import XPath2Parser, XPathContext, XPathToken, ElementPathError
+import warnings
+from typing import TYPE_CHECKING, Any, Dict, Iterator, Optional, Union, Type
+
+from elementpath import ElementPathError, XPath2Parser, XPathContext, \
+    LazyElementNode, SchemaElementNode, build_schema_node_tree
 
 from ..names import XSD_ASSERT
 from ..aliases import ElementType, SchemaType, SchemaElementType, NamespacesType
-from ..xpath import XMLSchemaProtocol, ElementProtocol, ElementPathMixin, XMLSchemaProxy
+from ..translation import gettext as _
+from ..xpath import ElementPathMixin, XMLSchemaProxy
 
-from .exceptions import XMLSchemaNotBuiltError, XMLSchemaValidationError
+from .exceptions import XMLSchemaNotBuiltError, XMLSchemaValidationError, \
+    XMLSchemaAssertPathWarning
 from .xsdbase import XsdComponent
 from .groups import XsdGroup
 
@@ -26,6 +31,8 @@ if TYPE_CHECKING:
     from .complex_types import XsdComplexType
     from .elements import XsdElement
     from .wildcards import XsdAnyElement
+
+warnings.filterwarnings(action="always", category=XMLSchemaAssertPathWarning)
 
 
 class XsdAssert(XsdComponent, ElementPathMixin[Union['XsdAssert', SchemaElementType]]):
@@ -42,8 +49,8 @@ class XsdAssert(XsdComponent, ElementPathMixin[Union['XsdAssert', SchemaElementT
     """
     parent: 'XsdComplexType'
     _ADMITTED_TAGS = {XSD_ASSERT}
-    token: Optional[XPathToken] = None
-    parser: Optional[XPath2Parser] = None
+    token = None
+    parser = None
     path = 'true()'
 
     def __init__(self, elem: ElementType,
@@ -53,7 +60,7 @@ class XsdAssert(XsdComponent, ElementPathMixin[Union['XsdAssert', SchemaElementT
 
         self._xpath_lock = threading.Lock()
         self.base_type = base_type
-        super(XsdAssert, self).__init__(elem, schema, parent)
+        super().__init__(elem, schema, parent)
 
     def __repr__(self) -> str:
         if len(self.path) < 40:
@@ -72,7 +79,8 @@ class XsdAssert(XsdComponent, ElementPathMixin[Union['XsdAssert', SchemaElementT
 
     def _parse(self) -> None:
         if self.base_type.is_simple():
-            self.parse_error("base_type=%r is not a complexType definition" % self.base_type)
+            msg = _("base_type={!r} is not a complexType definition")
+            self.parse_error(msg.format(self.base_type))
         else:
             try:
                 self.path = self.elem.attrib['test'].strip()
@@ -89,9 +97,16 @@ class XsdAssert(XsdComponent, ElementPathMixin[Union['XsdAssert', SchemaElementT
         return self.parser is not None and self.token is not None
 
     def build(self) -> None:
+        if self.schema.use_xpath3:
+            from ..xpath3 import XPath3Parser
+            parser_class: Union[Type[XPath2Parser], Type[XPath3Parser]]
+            parser_class = XPath3Parser
+        else:
+            parser_class = XPath2Parser
+
         # Assert requires a schema bound parser because select
         # is on XML elements and with XSD type decoded values
-        self.parser = XPath2Parser(
+        self.parser = parser_class(
             namespaces=self.namespaces,
             variable_types={'value': self.base_type.sequence_type},
             strict=False,
@@ -104,18 +119,26 @@ class XsdAssert(XsdComponent, ElementPathMixin[Union['XsdAssert', SchemaElementT
         except ElementPathError as err:
             self.parse_error(err)
             self.token = self.parser.parse('true()')
+        else:
+            if any(len(tk) < 2 for tk in self.token.iter('/', '//')):
+                msg = (
+                    f"The XPath expression of {self} contains absolute location paths "
+                    f"/ or //, but an assert XPath tree is rooted at a parentless elem"
+                    f"ent so these operators will return empty sequences."
+                )
+                warnings.warn(msg, category=XMLSchemaAssertPathWarning, stacklevel=4)
         finally:
             if self.parser.variable_types:
                 self.parser.variable_types.clear()
 
-    def __call__(self, elem: ElementType,
+    def __call__(self, obj: ElementType,
                  value: Any = None,
                  namespaces: Optional[NamespacesType] = None,
                  source: Optional['XMLResource'] = None,
                  **kwargs: Any) -> Iterator[XMLSchemaValidationError]:
 
         if self.parser is None or self.token is None:
-            raise XMLSchemaNotBuiltError(self, "schema bound parser not set")
+            raise XMLSchemaNotBuiltError(self, 'schema bound parser not set')
 
         with self._xpath_lock:
             if not self.parser.is_schema_bound() and self.parser.schema:
@@ -127,18 +150,24 @@ class XsdAssert(XsdComponent, ElementPathMixin[Union['XsdAssert', SchemaElementT
             _namespaces = dict(namespaces)
 
         variables = {'value': None if value is None else self.base_type.text_decode(value)}
+        context_kwargs: Dict[str, Any] = {
+            'uri': source.url if source is not None else None,
+            'fragment': True,
+            'variables': variables,
+        }
+
         if source is not None:
-            context = XPathContext(source.root, namespaces=_namespaces,
-                                   item=elem, variables=variables)
+            context = XPathContext(
+                source.get_xpath_node(obj), _namespaces, **context_kwargs
+            )
         else:
-            # If validated from a component (could not work with rooted XPath expressions)
-            context = XPathContext(elem, variables=variables)
+            context = XPathContext(LazyElementNode(obj), **context_kwargs)
 
         try:
             if not self.token.evaluate(context):
-                yield XMLSchemaValidationError(self, obj=elem, reason="assertion test if false")
+                yield XMLSchemaValidationError(self, obj=obj, reason="assertion test if false")
         except ElementPathError as err:
-            yield XMLSchemaValidationError(self, obj=elem, reason=str(err))
+            yield XMLSchemaValidationError(self, obj=obj, reason=str(err))
 
     # For implementing ElementPathMixin
     def __iter__(self) -> Iterator[Union['XsdElement', 'XsdAnyElement']]:
@@ -155,7 +184,18 @@ class XsdAssert(XsdComponent, ElementPathMixin[Union['XsdAssert', SchemaElementT
 
     @property
     def xpath_proxy(self) -> 'XMLSchemaProxy':
-        return XMLSchemaProxy(
-            schema=cast(XMLSchemaProtocol, self.schema),
-            base_element=cast(ElementProtocol, self)
+        return XMLSchemaProxy(self.schema, self)
+
+    @property
+    def xpath_node(self) -> SchemaElementNode:
+        schema_node = self.schema.xpath_node
+        node = schema_node.get_element_node(self)
+        if isinstance(node, SchemaElementNode):
+            return node
+
+        return build_schema_node_tree(
+            root=self,
+            uri=schema_node.uri,
+            elements=schema_node.elements,
+            global_elements=schema_node.children,
         )

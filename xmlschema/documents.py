@@ -12,13 +12,15 @@ from io import IOBase, TextIOBase
 from typing import Any, Dict, List, Optional, Type, Union, Tuple, \
     IO, BinaryIO, TextIO, Iterator
 
+from elementpath.etree import ElementTree, etree_tostring
+
 from .exceptions import XMLSchemaTypeError, XMLSchemaValueError, XMLResourceError
-from .names import XSD_NAMESPACE, XSI_TYPE
-from .etree import ElementTree, etree_tostring
+from .names import XSD_NAMESPACE, XSI_TYPE, XSD_SCHEMA
 from .aliases import ElementType, XMLSourceType, NamespacesType, LocationsType, \
-    LazyType, SchemaSourceType, ConverterType, DecodeType, EncodeType, \
+    LazyType, UriMapperType, SchemaSourceType, ConverterType, DecodeType, EncodeType, \
     JsonDecodeType
-from .helpers import is_etree_document
+from .helpers import get_extended_qname, update_namespaces, get_namespace_map, \
+    is_etree_document
 from .resources import fetch_schema_locations, XMLResource
 from .validators import XMLSchema10, XMLSchemaBase, XMLSchemaValidationError
 
@@ -31,6 +33,9 @@ def get_context(xml_document: Union[XMLSourceType, XMLResource],
                 defuse: str = 'remote',
                 timeout: int = 300,
                 lazy: LazyType = False,
+                thin_lazy: bool = True,
+                uri_mapper: Optional[UriMapperType] = None,
+                use_location_hints: bool = True,
                 dummy_schema: bool = False) -> Tuple[XMLResource, XMLSchemaBase]:
     """
     Get the XML document validation/decode context.
@@ -43,46 +48,56 @@ def get_context(xml_document: Union[XMLSourceType, XMLResource],
     if cls is None:
         cls = XMLSchema10
     elif not issubclass(cls, XMLSchemaBase):
-        raise XMLSchemaTypeError(f"invalid schema class {cls}")
+        raise XMLSchemaTypeError("invalid schema class %r" % cls)
 
     if isinstance(xml_document, XMLResource):
         resource = xml_document
     else:
-        resource = XMLResource(xml_document, base_url, defuse=defuse,
-                               timeout=timeout, lazy=lazy)
+        resource = XMLResource(xml_document, base_url, defuse=defuse, timeout=timeout,
+                               lazy=lazy, thin_lazy=thin_lazy)
 
     if isinstance(schema, XMLSchemaBase) and resource.namespace in schema.maps.namespaces:
         return resource, schema
     if isinstance(resource, XmlDocument) and isinstance(resource.schema, XMLSchemaBase):
         return resource, resource.schema
 
-    try:
-        schema_location, locations = fetch_schema_locations(resource, locations, base_url=base_url)
-    except ValueError:
-        if schema is None:
-            if XSI_TYPE in resource.root.attrib and cls.meta_schema is not None:
-                return resource, cls.meta_schema
-            elif dummy_schema:
-                return resource, get_dummy_schema(resource, cls)
+    if use_location_hints:
+        try:
+            schema_location, locations = fetch_schema_locations(
+                resource, locations, base_url=base_url
+            )
+        except ValueError:
+            pass
+        else:
+            kwargs = {
+                'locations': locations,
+                'defuse': defuse,
+                'timeout': timeout,
+                'uri_mapper': uri_mapper
+            }
+            if schema is None or isinstance(schema, XMLSchemaBase):
+                return resource, cls(schema_location, **kwargs)
             else:
-                msg = "no schema can be retrieved for the provided XML data"
-                raise XMLSchemaValueError(msg) from None
+                return resource, cls(schema, **kwargs)
 
-        elif isinstance(schema, XMLSchemaBase):
-            return resource, schema
+    if schema is None:
+        if XSD_NAMESPACE == resource.namespace:
+            assert cls.meta_schema is not None
+            return resource, cls.meta_schema
+        elif dummy_schema or XSI_TYPE in resource.root.attrib:
+            return resource, get_dummy_schema(resource.root.tag, cls)
         else:
-            return resource, cls(schema, locations=locations, base_url=base_url,
-                                 defuse=defuse, timeout=timeout)
+            msg = "cannot get a schema for XML data, provide a schema argument"
+            raise XMLSchemaValueError(msg)
+
+    elif isinstance(schema, XMLSchemaBase):
+        return resource, schema
     else:
-        kwargs = dict(locations=locations, defuse=defuse, timeout=timeout)
-        if schema is None or isinstance(schema, XMLSchemaBase):
-            return resource, cls(schema_location, **kwargs)
-        else:
-            return resource, cls(schema, **kwargs)
+        return resource, cls(schema, locations=locations, base_url=base_url,
+                             defuse=defuse, timeout=timeout, uri_mapper=uri_mapper)
 
 
-def get_dummy_schema(resource: XMLResource, cls: Type[XMLSchemaBase]) -> XMLSchemaBase:
-    tag = resource.root.tag
+def get_dummy_schema(tag: str, cls: Type[XMLSchemaBase]) -> XMLSchemaBase:
     if tag.startswith('{'):
         namespace, name = tag[1:].split('}')
     else:
@@ -90,14 +105,14 @@ def get_dummy_schema(resource: XMLResource, cls: Type[XMLSchemaBase]) -> XMLSche
 
     if namespace:
         return cls(
-            '<xs:schema xmlns:xs="{0}" targetNamespace="{1}">\n'
-            '    <xs:element name="{2}"/>\n'
+            '<xs:schema xmlns:xs="{}" targetNamespace="{}">\n'
+            '    <xs:element name="{}"/>\n'
             '</xs:schema>'.format(XSD_NAMESPACE, namespace, name)
         )
     else:
         return cls(
-            '<xs:schema xmlns:xs="{0}">\n'
-            '    <xs:element name="{1}"/>\n'
+            '<xs:schema xmlns:xs="{}">\n'
+            '    <xs:element name="{}"/>\n'
             '</xs:schema>'.format(XSD_NAMESPACE, name)
         )
 
@@ -107,12 +122,12 @@ def get_lazy_json_encoder(errors: List[XMLSchemaValidationError]) -> Type[json.J
     class JSONLazyEncoder(json.JSONEncoder):
         def default(self, obj: Any) -> Any:
             if isinstance(obj, Iterator):
-                while True:
-                    result = next(obj, None)
+                for result in obj:
                     if isinstance(result, XMLSchemaValidationError):
                         errors.append(result)
                     else:
                         return result
+                return None
             return json.JSONEncoder.default(self, obj)
 
     return JSONLazyEncoder
@@ -129,7 +144,10 @@ def validate(xml_document: Union[XMLSourceType, XMLResource],
              base_url: Optional[str] = None,
              defuse: str = 'remote',
              timeout: int = 300,
-             lazy: LazyType = False) -> None:
+             lazy: LazyType = False,
+             thin_lazy: bool = True,
+             uri_mapper: Optional[UriMapperType] = None,
+             use_location_hints: bool = True) -> None:
     """
     Validates an XML document against a schema instance. This function builds an
     :class:`XMLSchema` object for validating the XML document. Raises an
@@ -137,7 +155,7 @@ def validate(xml_document: Union[XMLSourceType, XMLResource],
     the schema.
 
     :param xml_document: can be an :class:`XMLResource` instance, a file-like object a path \
-    to a file or an URI of a resource or an Element instance or an ElementTree instance or \
+    to a file or a URI of a resource or an Element instance or an ElementTree instance or \
     a string containing the XML data. If the passed argument is not an :class:`XMLResource` \
     instance a new one is built using this and *defuse*, *timeout* and *lazy* arguments.
     :param schema: can be a schema instance or a file-like object or a file path or a URL \
@@ -155,16 +173,22 @@ def validate(xml_document: Union[XMLSourceType, XMLResource],
     has to be built.
     :param base_url: is an optional custom base URL for remapping relative locations, for \
     default uses the directory where the XSD or alternatively the XML document is located.
-    :param defuse: optional argument to pass for construct schema and \
-    :class:`XMLResource` instances.
-    :param timeout: optional argument to pass for construct schema and \
-    :class:`XMLResource` instances.
-    :param lazy: optional argument for construct the :class:`XMLResource` instance.
+    :param defuse: an optional argument for building the schema and the \
+    :class:`XMLResource` instance.
+    :param timeout: an optional argument for building the schema and the \
+    :class:`XMLResource` instance.
+    :param lazy: an optional argument for building the :class:`XMLResource` instance.
+    :param thin_lazy: an optional argument for building the :class:`XMLResource` instance.
+    :param uri_mapper: an optional argument for building the schema from location hints.
+    :param use_location_hints: for default, in case a schema instance has \
+    to be built, uses also schema locations hints provided within XML data. \
+    Set this option to `False` to ignore these schema location hints.
     """
-    source, _schema = get_context(
-        xml_document, schema, cls, locations, base_url, defuse, timeout, lazy
-    )
-    _schema.validate(source, path, schema_path, use_defaults, namespaces)
+    source, schema = get_context(xml_document, schema, cls, locations, base_url,
+                                 defuse, timeout, lazy, thin_lazy, uri_mapper,
+                                 use_location_hints)
+    schema.validate(source, path, schema_path, use_defaults, namespaces,
+                    use_location_hints=use_location_hints)
 
 
 def is_valid(xml_document: Union[XMLSourceType, XMLResource],
@@ -178,15 +202,19 @@ def is_valid(xml_document: Union[XMLSourceType, XMLResource],
              base_url: Optional[str] = None,
              defuse: str = 'remote',
              timeout: int = 300,
-             lazy: LazyType = False) -> bool:
+             lazy: LazyType = False,
+             thin_lazy: bool = True,
+             uri_mapper: Optional[UriMapperType] = None,
+             use_location_hints: bool = True) -> bool:
     """
-    Like :meth:`validate` except that do not raises an exception but returns ``True`` if
+    Like :meth:`validate` except that do not raise an exception but returns ``True`` if
     the XML document is valid, ``False`` if it's invalid.
     """
-    source, schema = get_context(
-        xml_document, schema, cls, locations, base_url, defuse, timeout, lazy
-    )
-    return schema.is_valid(source, path, schema_path, use_defaults, namespaces)
+    source, schema = get_context(xml_document, schema, cls, locations, base_url,
+                                 defuse, timeout, lazy, thin_lazy, uri_mapper,
+                                 use_location_hints)
+    return schema.is_valid(source, path, schema_path, use_defaults, namespaces,
+                           use_location_hints=use_location_hints)
 
 
 def iter_errors(xml_document: Union[XMLSourceType, XMLResource],
@@ -200,28 +228,34 @@ def iter_errors(xml_document: Union[XMLSourceType, XMLResource],
                 base_url: Optional[str] = None,
                 defuse: str = 'remote',
                 timeout: int = 300,
-                lazy: LazyType = False) -> Iterator[XMLSchemaValidationError]:
+                lazy: LazyType = False,
+                thin_lazy: bool = True,
+                uri_mapper: Optional[UriMapperType] = None,
+                use_location_hints: bool = True) -> Iterator[XMLSchemaValidationError]:
     """
     Creates an iterator for the errors generated by the validation of an XML document.
     Takes the same arguments of the function :meth:`validate`.
     """
-    source, schema = get_context(
-        xml_document, schema, cls, locations, base_url, defuse, timeout, lazy
-    )
-    return schema.iter_errors(source, path, schema_path, use_defaults, namespaces)
+    source, schema = get_context(xml_document, schema, cls, locations, base_url,
+                                 defuse, timeout, lazy, thin_lazy, uri_mapper,
+                                 use_location_hints)
+    return schema.iter_errors(source, path, schema_path, use_defaults, namespaces,
+                              use_location_hints=use_location_hints)
 
 
 def iter_decode(xml_document: Union[XMLSourceType, XMLResource],
                 schema: Optional[XMLSchemaBase] = None,
                 cls: Optional[Type[XMLSchemaBase]] = None,
                 path: Optional[str] = None,
-                validation: str = 'strict',
-                process_namespaces: bool = True,
+                validation: str = 'lax',
                 locations: Optional[LocationsType] = None,
                 base_url: Optional[str] = None,
                 defuse: str = 'remote',
                 timeout: int = 300,
                 lazy: LazyType = False,
+                thin_lazy: bool = True,
+                uri_mapper: Optional[UriMapperType] = None,
+                use_location_hints: bool = True,
                 **kwargs: Any) -> Iterator[Union[Any, XMLSchemaValidationError]]:
     """
     Creates an iterator for decoding an XML source to a data structure. For default
@@ -229,7 +263,7 @@ def iter_decode(xml_document: Union[XMLSourceType, XMLResource],
     or more :exc:`XMLSchemaValidationError` instances are yielded before the decoded data.
 
     :param xml_document: can be an :class:`XMLResource` instance, a file-like object a path \
-    to a file or an URI of a resource or an Element instance or an ElementTree instance or \
+    to a file or a URI of a resource or an Element instance or an ElementTree instance or \
     a string containing the XML data. If the passed argument is not an :class:`XMLResource` \
     instance a new one is built using this and *defuse*, *timeout* and *lazy* arguments.
     :param schema: can be a schema instance or a file-like object or a file path or a URL \
@@ -240,27 +274,30 @@ def iter_decode(xml_document: Union[XMLSourceType, XMLResource],
     data that have to be decoded. If not provided the XML root element is used.
     :param validation: defines the XSD validation mode to use for decode, can be \
     'strict', 'lax' or 'skip'.
-    :param process_namespaces: indicates whether to use namespace information in \
-    the decoding process.
     :param locations: additional schema location hints, in case a schema instance \
     has to be built.
     :param base_url: is an optional custom base URL for remapping relative locations, for \
     default uses the directory where the XSD or alternatively the XML document is located.
-    :param defuse: optional argument to pass for construct schema and \
-    :class:`XMLResource` instances.
-    :param timeout: optional argument to pass for construct schema and \
-    :class:`XMLResource` instances.
-    :param lazy: optional argument for construct the :class:`XMLResource` instance.
-    :param kwargs: other optional arguments of :meth:`XMLSchema.iter_decode` \
+    :param defuse: an optional argument for building the schema and the \
+    :class:`XMLResource` instance.
+    :param timeout: an optional argument for building the schema and the \
+    :class:`XMLResource` instance.
+    :param lazy: an optional argument for building the :class:`XMLResource` instance.
+    :param thin_lazy: an optional argument for building the :class:`XMLResource` instance.
+    :param uri_mapper: an optional argument for building the schema from location hints.
+    :param use_location_hints: for default, in case a schema instance has \
+    to be built, uses also schema locations hints provided within XML data. \
+    Set this option to `False` to ignore these schema location hints.
+    :param kwargs: other optional arguments of :meth:`XMLSchemaBase.iter_decode` \
     as keyword arguments.
     :raises: :exc:`XMLSchemaValidationError` if the XML document is invalid and \
     ``validation='strict'`` is provided.
     """
-    source, _schema = get_context(
-        xml_document, schema, cls, locations, base_url, defuse, timeout, lazy
-    )
+    source, _schema = get_context(xml_document, schema, cls, locations, base_url,
+                                  defuse, timeout, lazy, thin_lazy, uri_mapper,
+                                  use_location_hints)
     yield from _schema.iter_decode(source, path=path, validation=validation,
-                                   process_namespaces=process_namespaces, **kwargs)
+                                   use_location_hints=use_location_hints, **kwargs)
 
 
 def to_dict(xml_document: Union[XMLSourceType, XMLResource],
@@ -268,12 +305,15 @@ def to_dict(xml_document: Union[XMLSourceType, XMLResource],
             cls: Optional[Type[XMLSchemaBase]] = None,
             path: Optional[str] = None,
             validation: str = 'strict',
-            process_namespaces: bool = True,
             locations: Optional[LocationsType] = None,
             base_url: Optional[str] = None,
             defuse: str = 'remote',
             timeout: int = 300,
-            lazy: LazyType = False, **kwargs: Any) -> DecodeType[Any]:
+            lazy: LazyType = False,
+            thin_lazy: bool = True,
+            uri_mapper: Optional[UriMapperType] = None,
+            use_location_hints: bool = True,
+            **kwargs: Any) -> DecodeType[Any]:
     """
     Decodes an XML document to a Python's nested dictionary. Takes the same arguments
     of the function :meth:`iter_decode`, but *validation* mode defaults to 'strict'.
@@ -283,11 +323,11 @@ def to_dict(xml_document: Union[XMLSourceType, XMLResource],
     :raises: :exc:`XMLSchemaValidationError` if the XML document is invalid and \
     ``validation='strict'`` is provided.
     """
-    source, _schema = get_context(
-        xml_document, schema, cls, locations, base_url, defuse, timeout, lazy
-    )
+    source, _schema = get_context(xml_document, schema, cls, locations, base_url,
+                                  defuse, timeout, lazy, thin_lazy, uri_mapper,
+                                  use_location_hints)
     return _schema.decode(source, path=path, validation=validation,
-                          process_namespaces=process_namespaces, **kwargs)
+                          use_location_hints=use_location_hints, **kwargs)
 
 
 def to_json(xml_document: Union[XMLSourceType, XMLResource],
@@ -295,13 +335,15 @@ def to_json(xml_document: Union[XMLSourceType, XMLResource],
             schema: Optional[XMLSchemaBase] = None,
             cls: Optional[Type[XMLSchemaBase]] = None,
             path: Optional[str] = None,
-            converter: Optional[ConverterType] = None,
-            process_namespaces: bool = True,
+            validation: str = 'strict',
             locations: Optional[LocationsType] = None,
             base_url: Optional[str] = None,
             defuse: str = 'remote',
             timeout: int = 300,
             lazy: LazyType = False,
+            thin_lazy: bool = True,
+            uri_mapper: Optional[UriMapperType] = None,
+            use_location_hints: bool = True,
             json_options: Optional[Dict[str, Any]] = None,
             **kwargs: Any) -> JsonDecodeType:
     """
@@ -310,31 +352,34 @@ def to_json(xml_document: Union[XMLSourceType, XMLResource],
     is not validated against the schema.
 
     :param xml_document: can be an :class:`XMLResource` instance, a file-like object a path \
-    to a file or an URI of a resource or an Element instance or an ElementTree instance or \
+    to a file or a URI of a resource or an Element instance or an ElementTree instance or \
     a string containing the XML data. If the passed argument is not an :class:`XMLResource` \
     instance a new one is built using this and *defuse*, *timeout* and *lazy* arguments.
     :param fp: can be a :meth:`write()` supporting file-like object.
-    :param schema: can be a schema instance or a file-like object or a file path or an URL \
+    :param schema: can be a schema instance or a file-like object or a file path or a URL \
     of a resource or a string containing the schema.
     :param cls: schema class to use for building the instance (for default uses \
     :class:`XMLSchema10`).
     :param path: is an optional XPath expression that matches the elements of the XML \
     data that have to be decoded. If not provided the XML root element is used.
-    :param converter: an :class:`XMLSchemaConverter` subclass or instance to use \
-    for the decoding.
-    :param process_namespaces: indicates whether to use namespace information in \
-    the decoding process.
+    :param validation: defines the XSD validation mode to use for decode, can be \
+    'strict', 'lax' or 'skip'.
     :param locations: additional schema location hints, in case the schema instance \
     has to be built.
     :param base_url: is an optional custom base URL for remapping relative locations, for \
     default uses the directory where the XSD or alternatively the XML document is located.
-    :param defuse: optional argument to pass for construct schema and \
-    :class:`XMLResource` instances.
-    :param timeout: optional argument to pass for construct schema and \
-    :class:`XMLResource` instances.
-    :param lazy: optional argument for construct the :class:`XMLResource` instance.
+    :param defuse: an optional argument for building the schema and the \
+    :class:`XMLResource` instance.
+    :param timeout: an optional argument for building the schema and the \
+    :class:`XMLResource` instance.
+    :param uri_mapper: an optional argument for building the schema from location hints.
+    :param lazy: an optional argument for building the :class:`XMLResource` instance.
+    :param thin_lazy: an optional argument for building the :class:`XMLResource` instance.
+    :param use_location_hints: for default, in case a schema instance has \
+    to be built, uses also schema locations hints provided within XML data. \
+    Set this option to `False` to ignore these schema location hints.
     :param json_options: a dictionary with options for the JSON serializer.
-    :param kwargs: optional arguments of :meth:`XMLSchema.iter_decode` as keyword arguments \
+    :param kwargs: optional arguments of :meth:`XMLSchemaBase.iter_decode` as keyword arguments \
     to variate the decoding process.
     :return: a string containing the JSON data if *fp* is `None`, otherwise doesn't \
     return anything. If ``validation='lax'`` keyword argument is provided the validation \
@@ -342,22 +387,23 @@ def to_json(xml_document: Union[XMLSourceType, XMLResource],
     :raises: :exc:`XMLSchemaValidationError` if the object is not decodable by \
     the XSD component, or also if it's invalid when ``validation='strict'`` is provided.
     """
-    source, _schema = get_context(
-        xml_document, schema, cls, locations, base_url, defuse, timeout, lazy
-    )
+    dummy_schema = validation == 'skip'
+    source, _schema = get_context(xml_document, schema, cls, locations, base_url,
+                                  defuse, timeout, lazy, thin_lazy, uri_mapper,
+                                  use_location_hints, dummy_schema)
     if json_options is None:
         json_options = {}
     if 'decimal_type' not in kwargs:
         kwargs['decimal_type'] = float
-    kwargs['converter'] = converter
-    kwargs['process_namespaces'] = process_namespaces
 
     errors: List[XMLSchemaValidationError] = []
 
     if path is None and source.is_lazy() and 'cls' not in json_options:
         json_options['cls'] = get_lazy_json_encoder(errors)
 
-    obj = _schema.decode(source, path=path, **kwargs)
+    obj = _schema.decode(source, path=path, validation=validation,
+                         use_location_hints=use_location_hints, **kwargs)
+
     if isinstance(obj, tuple):
         errors.extend(obj[1])
         if fp is not None:
@@ -374,10 +420,94 @@ def to_json(xml_document: Union[XMLSourceType, XMLResource],
         return result if not errors else (result, tuple(errors))
 
 
+def to_etree(obj: Any,
+             schema: Optional[Union[XMLSchemaBase, SchemaSourceType]] = None,
+             cls: Optional[Type[XMLSchemaBase]] = None,
+             path: Optional[str] = None,
+             validation: str = 'strict',
+             namespaces: Optional[NamespacesType] = None,
+             use_defaults: bool = True,
+             converter: Optional[ConverterType] = None,
+             unordered: bool = False,
+             **kwargs: Any) -> EncodeType[ElementType]:
+    """
+    Encodes a data structure/object to an ElementTree's Element.
+
+    :param obj: the Python object that has to be encoded to XML data.
+    :param schema: can be a schema instance or a file-like object or a file path or a URL \
+    of a resource or a string containing the schema. If not provided a dummy schema is used.
+    :param cls: class to use for building the schema instance (for default uses \
+    :class:`XMLSchema10`).
+    :param path: is an optional XPath expression for selecting the element of the schema \
+    that matches the data that has to be encoded. For default the first global element of \
+    the schema is used.
+    :param validation: the XSD validation mode. Can be 'strict', 'lax' or 'skip'.
+    :param namespaces: is an optional mapping from namespace prefix to URI.
+    :param use_defaults: whether to use default values for filling missing data.
+    :param converter: an :class:`XMLSchemaConverter` subclass or instance to use for \
+    the encoding.
+    :param unordered: a flag for explicitly activating unordered encoding mode for \
+    content model data. This mode uses content models for a reordered-by-model \
+    iteration of the child elements.
+    :param kwargs: other optional arguments of :meth:`XMLSchemaBase.iter_encode` and \
+    options for the converter.
+    :return: An element tree's Element instance. If ``validation='lax'`` keyword argument is \
+    provided the validation errors are collected and returned coupled in a tuple with the \
+    Element instance.
+    :raises: :exc:`XMLSchemaValidationError` if the object is not encodable by the schema, \
+    or also if it's invalid when ``validation='strict'`` is provided.
+    """
+    if cls is None:
+        cls = XMLSchema10
+    elif not issubclass(cls, XMLSchemaBase):
+        raise XMLSchemaTypeError("invalid schema class %r" % cls)
+
+    if schema is None:
+        if not path:
+            raise XMLSchemaTypeError("without schema a path is required "
+                                     "for building a dummy schema")
+
+        if namespaces is None:
+            tag = get_extended_qname(path, {'xsd': XSD_NAMESPACE, 'xs': XSD_NAMESPACE})
+        else:
+            tag = get_extended_qname(path, namespaces)
+
+        if not tag.startswith('{') and ':' in tag:
+            raise XMLSchemaTypeError("without schema the path must be "
+                                     "mappable to a local or extended name")
+
+        if tag == XSD_SCHEMA:
+            assert cls.meta_schema is not None
+            _schema = cls.meta_schema
+        else:
+            _schema = get_dummy_schema(tag, cls)
+
+    elif isinstance(schema, XMLSchemaBase):
+        _schema = schema
+    else:
+        _schema = cls(schema)
+
+    return _schema.encode(
+        obj=obj,
+        path=path,
+        validation=validation,
+        namespaces=namespaces,
+        use_defaults=use_defaults,
+        converter=converter,
+        unordered=unordered,
+        **kwargs
+    )
+
+
 def from_json(source: Union[str, bytes, IO[str]],
-              schema: XMLSchemaBase,
+              schema: Optional[Union[XMLSchemaBase, SchemaSourceType]] = None,
+              cls: Optional[Type[XMLSchemaBase]] = None,
               path: Optional[str] = None,
+              validation: str = 'strict',
+              namespaces: Optional[NamespacesType] = None,
+              use_defaults: bool = True,
               converter: Optional[ConverterType] = None,
+              unordered: bool = False,
               json_options: Optional[Dict[str, Any]] = None,
               **kwargs: Any) -> EncodeType[ElementType]:
     """
@@ -386,13 +516,21 @@ def from_json(source: Union[str, bytes, IO[str]],
     :param source: can be a string or a :meth:`read()` supporting file-like object \
     containing the JSON document.
     :param schema: an :class:`XMLSchema10` or an :class:`XMLSchema11` instance.
+    :param cls: class to use for building the schema instance (for default uses \
+    :class:`XMLSchema10`).
     :param path: is an optional XPath expression for selecting the element of the schema \
     that matches the data that has to be encoded. For default the first global element of \
     the schema is used.
-    :param converter: an :class:`XMLSchemaConverter` subclass or instance to use \
-    for the encoding.
+    :param validation: the XSD validation mode. Can be 'strict', 'lax' or 'skip'.
+    :param namespaces: is an optional mapping from namespace prefix to URI.
+    :param use_defaults: whether to use default values for filling missing data.
+    :param converter: an :class:`XMLSchemaConverter` subclass or instance to use for \
+    the encoding.
+    :param unordered: a flag for explicitly activating unordered encoding mode for \
+    content model data. This mode uses content models for a reordered-by-model \
+    iteration of the child elements.
     :param json_options: a dictionary with options for the JSON deserializer.
-    :param kwargs: other optional arguments of :meth:`XMLSchema.iter_encode` and \
+    :param kwargs: other optional arguments of :meth:`XMLSchemaBase.iter_encode` and \
     options for converter.
     :return: An element tree's Element instance. If ``validation='lax'`` keyword argument is \
     provided the validation errors are collected and returned coupled in a tuple with the \
@@ -400,9 +538,7 @@ def from_json(source: Union[str, bytes, IO[str]],
     :raises: :exc:`XMLSchemaValidationError` if the object is not encodable by the schema, \
     or also if it's invalid when ``validation='strict'`` is provided.
     """
-    if not isinstance(schema, XMLSchemaBase):
-        raise XMLSchemaTypeError("invalid type %r for argument 'schema'" % type(schema))
-    elif json_options is None:
+    if json_options is None:
         json_options = {}
 
     if isinstance(source, (str, bytes)):
@@ -410,7 +546,18 @@ def from_json(source: Union[str, bytes, IO[str]],
     else:
         obj = json.load(source, **json_options)
 
-    return schema.encode(obj, path=path, converter=converter, **kwargs)
+    return to_etree(
+        obj=obj,
+        schema=schema,
+        cls=cls,
+        path=path,
+        validation=validation,
+        namespaces=namespaces,
+        use_defaults=use_defaults,
+        converter=converter,
+        unordered=unordered,
+        **kwargs
+    )
 
 
 class XmlDocument(XMLResource):
@@ -419,10 +566,10 @@ class XmlDocument(XMLResource):
     context and validation argument is 'skip' the XML document is associated with
     a generic schema, otherwise a ValueError is raised.
 
-    :param source: a string containing XML data or a file path or an URL or a \
+    :param source: a string containing XML data or a file path or a URL or a \
     file like object or an ElementTree or an Element.
     :param schema: can be a :class:`xmlschema.XMLSchema` instance or a file-like \
-    object or a file path or an URL of a resource or a string containing the XSD schema.
+    object or a file path or a URL of a resource or a string containing the XSD schema.
     :param cls: class to use for building the schema instance (for default \
     :class:`XMLSchema10` is used).
     :param validation: the XSD validation mode to use for validating the XML document, \
@@ -435,6 +582,12 @@ class XmlDocument(XMLResource):
     :param defuse: the defuse mode for base :class:`xmlschema.XMLResource` initialization.
     :param timeout: the timeout for base :class:`xmlschema.XMLResource` initialization.
     :param lazy: the lazy mode for base :class:`xmlschema.XMLResource` initialization.
+    :param thin_lazy: the thin_lazy option for base :class:`xmlschema.XMLResource` \
+    initialization.
+    :param uri_mapper: an optional argument for building the schema from location hints.
+    :param use_location_hints: for default, in case a schema instance has \
+    to be built, uses also schema locations hints provided within XML data. \
+    Set this option to `False` to ignore these schema location hints.
     """
     schema: Optional[XMLSchemaBase] = None
     _fallback_schema: Optional[XMLSchemaBase] = None
@@ -452,44 +605,59 @@ class XmlDocument(XMLResource):
                  allow: str = 'all',
                  defuse: str = 'remote',
                  timeout: int = 300,
-                 lazy: LazyType = False) -> None:
+                 lazy: LazyType = False,
+                 thin_lazy: bool = True,
+                 uri_mapper: Optional[UriMapperType] = None,
+                 use_location_hints: bool = True) -> None:
 
         if cls is None:
             cls = XMLSchema10
         self.validation = validation
-        self._namespaces = namespaces
-        super(XmlDocument, self).__init__(source, base_url, allow, defuse, timeout, lazy)
+        self._namespaces = get_namespace_map(namespaces)
+        super().__init__(source, base_url, allow, defuse, timeout, lazy, thin_lazy)
 
         if isinstance(schema, XMLSchemaBase) and self.namespace in schema.maps.namespaces:
             self.schema = schema
         elif schema is not None and not isinstance(schema, XMLSchemaBase):
             self.schema = cls(
                 source=schema,
+                locations=locations,
                 base_url=base_url,
                 allow=allow,
                 defuse=defuse,
                 timeout=timeout,
+                uri_mapper=uri_mapper
             )
         else:
-            try:
-                schema_location, locations = fetch_schema_locations(self, locations, base_url)
-            except ValueError:
-                if XSI_TYPE in self._root.attrib:
-                    self.schema = cls.meta_schema
-                elif validation != 'skip':
-                    msg = "no schema can be retrieved for the XML resource"
-                    raise XMLSchemaValueError(msg) from None
+            if use_location_hints:
+                try:
+                    schema_location, locations = fetch_schema_locations(
+                        source=self,
+                        locations=locations,
+                        base_url=base_url,
+                        uri_mapper=uri_mapper,
+                        root_only=False
+                    )
+                except ValueError:
+                    pass
                 else:
-                    self._fallback_schema = get_dummy_schema(self, cls)
-            else:
-                self.schema = cls(
-                    source=schema_location,
-                    validation='strict',
-                    locations=locations,
-                    defuse=defuse,
-                    allow=allow,
-                    timeout=timeout,
-                )
+                    self.schema = cls(
+                        source=schema_location,
+                        locations=locations,
+                        allow=allow,
+                        defuse=defuse,
+                        timeout=timeout,
+                        uri_mapper=uri_mapper
+                    )
+
+            if self.schema is None:
+                if XSI_TYPE in self._root.attrib:
+                    self.schema = get_dummy_schema(self._root.tag, cls)
+                elif validation != 'skip':
+                    msg = "cannot get a schema for XML data, provide a schema argument"
+                    raise XMLSchemaValueError(msg)
+                else:
+                    self._fallback_schema = get_dummy_schema(self._root.tag, cls)
 
         if self.schema is None:
             pass
@@ -498,11 +666,11 @@ class XmlDocument(XMLResource):
         elif validation == 'lax':
             self.errors = [e for e in self.schema.iter_errors(self, namespaces=self.namespaces)]
         elif validation != 'skip':
-            raise XMLSchemaValueError("{!r}: not a validation mode".format(validation))
+            raise XMLSchemaValueError("%r is not a validation mode" % validation)
 
     def parse(self, source: XMLSourceType, lazy: LazyType = False) -> None:
-        super(XmlDocument, self).parse(source, lazy)
-        self.namespaces = self.get_namespaces(self._namespaces)
+        super().parse(source, lazy)
+        self.namespaces = self.get_namespaces(root_only=True)
 
         if self.schema is None:
             pass
@@ -511,40 +679,31 @@ class XmlDocument(XMLResource):
         elif self.validation == 'lax':
             self.errors = [e for e in self.schema.iter_errors(self, namespaces=self.namespaces)]
 
+    def get_namespaces(self, namespaces: Optional[NamespacesType] = None,
+                       root_only: bool = True) -> NamespacesType:
+        namespaces = get_namespace_map(namespaces)
+        update_namespaces(namespaces, self._namespaces.items(), root_declarations=True)
+        return super().get_namespaces(namespaces, root_only)
+
     def getroot(self) -> ElementType:
         """Get the root element of the XML document."""
         return self._root
 
     def get_etree_document(self) -> Any:
         """
-        The resource as ElementTree XML document. If the resource is lazy raises a resource error.
+        The resource as ElementTree XML document. If the resource is lazy
+        raises a resource error.
         """
         if is_etree_document(self._source):
             return self._source
         elif self._lazy:
-            msg = "cannot create an ElementTree from a lazy resource"
-            raise XMLResourceError(msg)
+            raise XMLResourceError(
+                "cannot create an ElementTree instance from a lazy XML resource"
+            )
         elif hasattr(self._root, 'nsmap'):
             return self._root.getroottree()  # type: ignore[attr-defined]
         else:
             return ElementTree.ElementTree(self._root)
-
-    def tostring(self, indent: str = '', max_lines: Optional[int] = None,
-                 spaces_for_tab: int = 4, xml_declaration: bool = False,
-                 encoding: str = 'unicode', method: str = 'xml') -> str:
-        if self._lazy:
-            raise XMLResourceError("cannot serialize a lazy XML document")
-
-        _string = etree_tostring(
-            elem=self._root,
-            namespaces=self.namespaces,
-            xml_declaration=xml_declaration,
-            encoding=encoding,
-            method=method
-        )
-        if isinstance(_string, bytes):
-            return _string.decode('utf-8')
-        return _string
 
     def decode(self, **kwargs: Any) -> DecodeType[Any]:
         """
@@ -618,7 +777,7 @@ class XmlDocument(XMLResource):
               default_namespace: Optional[str] = None, method: str = "xml") -> None:
         """Serialize an XML resource to a file. Cannot be used with lazy resources."""
         if self._lazy:
-            raise XMLResourceError("cannot serialize a lazy XML document")
+            raise XMLResourceError("cannot serialize a lazy XML resource")
 
         kwargs: Dict[str, Any] = {
             'xml_declaration': xml_declaration,
@@ -663,4 +822,5 @@ class XmlDocument(XMLResource):
             else:
                 file.write(_string)
         else:
-            raise XMLSchemaTypeError(f"unexpected type {type(file)} for 'file' argument")
+            msg = "unexpected type %r for 'file' argument"
+            raise XMLSchemaTypeError(msg % type(file))

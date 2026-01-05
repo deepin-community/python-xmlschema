@@ -12,17 +12,21 @@ This module contains classes for XML Schema model groups.
 """
 import warnings
 from collections.abc import MutableMapping
-from typing import TYPE_CHECKING, overload, Any, Iterable, Iterator, List, \
-    MutableSequence, Optional, Tuple, Union
+from copy import copy as _copy
+from typing import TYPE_CHECKING, cast, overload, Any, Iterable, Iterator, \
+    List, MutableSequence, Optional, Tuple, Union
+from xml.etree import ElementTree
 
 from .. import limits
 from ..exceptions import XMLSchemaValueError
 from ..names import XSD_GROUP, XSD_SEQUENCE, XSD_ALL, XSD_CHOICE, XSD_ELEMENT, \
     XSD_ANY, XSI_TYPE, XSD_ANY_TYPE, XSD_ANNOTATION
-from ..etree import etree_element, ElementData
 from ..aliases import ElementType, NamespacesType, SchemaType, IterDecodeType, \
-    IterEncodeType, ModelParticleType, SchemaElementType, ComponentClassType
+    IterEncodeType, ModelParticleType, SchemaElementType, ComponentClassType, \
+    OccursCounterType
+from ..translation import gettext as _
 from ..helpers import get_qname, local_name, raw_xml_encode
+from ..converters import ElementData
 
 from .exceptions import XMLSchemaModelError, XMLSchemaModelDepthError, \
     XMLSchemaValidationError, XMLSchemaChildrenValidationError, \
@@ -30,13 +34,14 @@ from .exceptions import XMLSchemaModelError, XMLSchemaModelDepthError, \
 from .xsdbase import ValidationMixin, XsdComponent, XsdType
 from .particles import ParticleMixin, OccursCalculator
 from .elements import XsdElement, XsdAlternative
-from .wildcards import XsdAnyElement, Xsd11AnyElement
-from .models import ModelVisitor, distinguishable_paths
+from .wildcards import XsdAnyElement, Xsd11AnyElement, XsdOpenContent
+from .models import ModelVisitor, InterleavedModelVisitor, SuffixedModelVisitor, \
+    iter_unordered_content, iter_collapsed_content
 
 if TYPE_CHECKING:
     from .complex_types import XsdComplexType
 
-ANY_ELEMENT = etree_element(
+ANY_ELEMENT = ElementTree.Element(
     XSD_ANY,
     attrib={
         'namespace': '##any',
@@ -91,12 +96,12 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
     parent: Optional[Union['XsdComplexType', 'XsdGroup']]
     model: str
     mixed: bool = False
-    ref: Optional['XsdGroup']
+    ref: Optional['XsdGroup']  # Not None if the instance is a ref to a global group
+    content: List[ModelParticleType]  # Direct access to children also from a ref group
     restriction: Optional['XsdGroup'] = None
 
     # For XSD 1.1 openContent processing
-    interleave: Optional[Xsd11AnyElement] = None  # if openContent with mode='interleave'
-    suffix: Optional[Xsd11AnyElement] = None  # if openContent with mode='suffix'/'interleave'
+    open_content: Optional[XsdOpenContent] = None
 
     _ADMITTED_TAGS = {XSD_GROUP, XSD_SEQUENCE, XSD_ALL, XSD_CHOICE}
 
@@ -105,9 +110,11 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
                  parent: Optional[Union['XsdComplexType', 'XsdGroup']] = None) -> None:
 
         self._group: List[ModelParticleType] = []
+        self.content = self._group
+        self.oid = (self,)
         if parent is not None and parent.mixed:
             self.mixed = parent.mixed
-        super(XsdGroup, self).__init__(elem, schema, parent)
+        super().__init__(elem, schema, parent)
 
     def __repr__(self) -> str:
         if self.name is None:
@@ -190,16 +197,34 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
             return True
 
     @property
+    def open_content_mode(self) -> str:
+        return 'none' if self.open_content is None else self.open_content.mode
+
+    @property
     def effective_min_occurs(self) -> int:
         if not self.min_occurs or not self:
             return 0
+
+        effective_items: List[Any]
+        min_occurs: int
+        effective_items = [e for e in self.iter_model() if e.effective_max_occurs != 0]
+        if not effective_items:
+            return 0
         elif self.model == 'choice':
-            if any(not e.effective_min_occurs for e in self.iter_model()):
-                return 0
-        else:
-            if all(not e.effective_min_occurs for e in self.iter_model()):
-                return 0
-        return self.min_occurs
+            min_occurs = min(e.effective_min_occurs for e in effective_items)
+            return self.min_occurs * min_occurs
+        elif self.model == 'all':
+            min_occurs = max(e.effective_min_occurs for e in effective_items)
+            return min_occurs
+
+        not_emptiable_items = [e for e in effective_items if e.effective_min_occurs]
+        if not not_emptiable_items:
+            return 0
+        elif len(not_emptiable_items) > 1:
+            return self.min_occurs
+
+        min_occurs = not_emptiable_items[0].effective_min_occurs
+        return self.min_occurs * min_occurs
 
     @property
     def effective_max_occurs(self) -> Optional[int]:
@@ -207,35 +232,41 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
             return 0
 
         effective_items: List[Any]
-        value: int
+        max_occurs: int
 
-        effective_items = [e for e in self.iter_model() if e.effective_max_occurs != 0]
+        model_items = [(e, e.effective_max_occurs) for e in self.iter_model()]
+        effective_items = [x for x in model_items if x[1] != 0]
         if not effective_items:
             return 0
         elif self.max_occurs is None:
             return None
         elif self.model == 'choice':
-            try:
-                value = max(e.effective_max_occurs for e in effective_items)
-            except TypeError:
+            if any(x[1] is None for x in effective_items):
                 return None
             else:
-                return self.max_occurs * value
+                max_occurs = max(x[1] for x in effective_items)
+                return self.max_occurs * max_occurs
 
-        not_emptiable_items = [e for e in effective_items if e.effective_min_occurs]
+        not_emptiable_items = [x for x in effective_items if x[0].effective_min_occurs]
         if not not_emptiable_items:
-            try:
-                value = max(e.effective_max_occurs for e in effective_items)
-            except TypeError:
+            if any(x[1] is None for x in effective_items):
                 return None
             else:
-                return self.max_occurs * value
+                max_occurs = max(x[1] for x in effective_items)
+                return self.max_occurs * max_occurs
 
         elif len(not_emptiable_items) > 1:
-            return self.max_occurs
-
-        value = not_emptiable_items[0].effective_max_occurs
-        return None if value is None else self.max_occurs * value
+            if self.model == 'sequence':
+                return self.max_occurs
+            elif all(x[1] is None for x in not_emptiable_items):
+                return None
+            else:
+                max_occurs = min(x[1] for x in not_emptiable_items if x[1] is not None)
+                return max_occurs
+        elif not_emptiable_items[0][1] is None:
+            return None
+        else:
+            return self.max_occurs * cast(int, not_emptiable_items[0][1])
 
     def has_occurs_restriction(
             self, other: Union[ModelParticleType, ParticleMixin, 'OccursCalculator']) -> bool:
@@ -243,7 +274,7 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
         if not self:
             return True
         elif isinstance(other, XsdGroup):
-            return super(XsdGroup, self).has_occurs_restriction(other)
+            return super().has_occurs_restriction(other)
 
         # Group particle compared to element particle
         if self.max_occurs is None or any(e.max_occurs is None for e in self):
@@ -292,21 +323,20 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
         particles = iter(self)
 
         while True:
-            try:
-                item = next(particles)
-            except StopIteration:
-                try:
-                    particles = iterators.pop()
-                except IndexError:
-                    return
-            else:
+            for item in particles:
                 if isinstance(item, XsdGroup) and item.is_pointless(parent=self):
                     iterators.append(particles)
                     particles = iter(item)
                     if len(iterators) > limits.MAX_MODEL_DEPTH:
                         raise XMLSchemaModelDepthError(self)
+                    break
                 else:
                     yield item
+            else:
+                try:
+                    particles = iterators.pop()
+                except IndexError:
+                    return
 
     def iter_elements(self) -> Iterator[SchemaElementType]:
         """
@@ -320,84 +350,118 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
         particles = iter(self)
 
         while True:
-            try:
-                item = next(particles)
-            except StopIteration:
+            for item in particles:
+                if isinstance(item, XsdGroup):
+                    if item.max_occurs == 0:
+                        continue
+
+                    iterators.append(particles)
+                    particles = iter(item.content)
+                    if len(iterators) > limits.MAX_MODEL_DEPTH:
+                        raise XMLSchemaModelDepthError(self)
+                    break
+                else:
+                    yield item
+            else:
                 try:
                     particles = iterators.pop()
                 except IndexError:
                     return
-            else:
-                if isinstance(item, XsdGroup):
-                    iterators.append(particles)
-                    particles = iter(item)
-                    if len(iterators) > limits.MAX_MODEL_DEPTH:
-                        raise XMLSchemaModelDepthError(self)
-                else:
-                    yield item
 
-    def get_subgroups(self, item: ModelParticleType) -> List['XsdGroup']:
+    def get_subgroups(self, particle: ModelParticleType) -> List['XsdGroup']:
         """
         Returns a list of the groups that represent the path to the enclosed particle.
-        Raises an `XMLSchemaModelError` if *item* is not a particle of the model group.
+        Raises an `XMLSchemaModelError` if the argument is not a particle of the model
+        group.
         """
         subgroups: List[Tuple[XsdGroup, Iterator[ModelParticleType]]] = []
-        group, children = self, iter(self)
+        group, children = self, iter(self if self.ref is None else self.ref)
 
         while True:
-            try:
-                child = next(children)
-            except StopIteration:
+            for child in children:
+                if child is particle:
+                    _subgroups = [x[0] for x in subgroups]
+                    _subgroups.append(group)
+                    return _subgroups
+                elif isinstance(child, XsdGroup):
+                    if len(subgroups) > limits.MAX_MODEL_DEPTH:
+                        raise XMLSchemaModelDepthError(self)
+                    subgroups.append((group, children))
+                    group, children = child, iter(child if child.ref is None else child.ref)
+                    break
+            else:
                 try:
                     group, children = subgroups.pop()
                 except IndexError:
-                    msg = '{!r} is not a particle of the model group'
-                    raise XMLSchemaModelError(self, msg.format(item)) from None
-                else:
-                    continue
+                    msg = _('{!r} is not a particle of the model group')
+                    raise XMLSchemaModelError(self, msg.format(particle)) from None
 
-            if child is item:
-                _subgroups = [x[0] for x in subgroups]
-                _subgroups.append(group)
-                return _subgroups
-            elif isinstance(child, XsdGroup):
-                if len(subgroups) > limits.MAX_MODEL_DEPTH:
-                    raise XMLSchemaModelDepthError(self)
-                subgroups.append((group, children))
-                group, children = child, iter(child)
+    def get_model_visitor(self) -> ModelVisitor:
+        if self.open_content is None or self.open_content.mode == 'none':
+            return ModelVisitor(self)
+        elif self.open_content.mode == 'interleave':
+            return InterleavedModelVisitor(self, self.open_content.any_element)
+        else:
+            return SuffixedModelVisitor(self, self.open_content.any_element)
 
-    def overall_min_occurs(self, item: ModelParticleType) -> int:
-        """Returns the overall min occurs of a particle in the model."""
-        min_occurs = item.min_occurs
+    def overall_min_occurs(self, particle: ModelParticleType) -> int:
+        """
+        Returns the overall min occurs of a particle in the model group.
+        """
+        model = self.get_model_visitor()
+        return model.overall_min_occurs(particle)
 
-        for group in self.get_subgroups(item):
-            if group.model == 'choice' and len(group) > 1:
-                return 0
-            min_occurs *= group.min_occurs
+    def overall_max_occurs(self, particle: ModelParticleType) -> Optional[int]:
+        """
+        Returns the overall max occurs of a particle in the model group.
+        """
+        model = self.get_model_visitor()
+        return model.overall_max_occurs(particle)
 
-        return min_occurs
+    def is_optional(self, particle: ModelParticleType) -> bool:
+        """
+        Returns `True` if the provided particle can be optional in the model group.
+        """
+        return self.overall_min_occurs(particle) == 0
 
-    def overall_max_occurs(self, item: ModelParticleType) -> Optional[int]:
-        """Returns the overall max occurs of a particle in the model."""
-        max_occurs = item.max_occurs
+    def is_missing(self, occurs: OccursCounterType) -> bool:
+        value = occurs[self.oid] or occurs[self]
+        return not self.is_emptiable() if value == 0 else self.min_occurs > value
 
-        for group in self.get_subgroups(item):
-            if max_occurs == 0:
-                return 0
-            elif max_occurs is None:
-                continue
-            elif group.max_occurs is None:
-                max_occurs = None
+    def get_expected(self, occurs: OccursCounterType) -> List[SchemaElementType]:
+        """
+        Returns the expected elements of the current and descendant groups
+        given a counter of occurrences. Returns an empty list if the group
+        reached the maximum number of occurrences.
+        """
+        expected: List[SchemaElementType] = []
+        items: Union['XsdGroup', Iterator[ModelParticleType]]
+
+        if self.is_over(occurs):
+            return expected
+        elif self.model == 'choice':
+            items = self
+        else:
+            items = (p for p in self._group if p.min_occurs > occurs[p])
+
+        for p in items:
+            if isinstance(p, XsdGroup):
+                expected.extend(
+                    e for e in p.iter_elements() if e.min_occurs > occurs[e]
+                )
             else:
-                max_occurs *= group.max_occurs
-
-        return max_occurs
+                expected.append(p)
+                if p.name in p.maps.substitution_groups:
+                    expected.extend(p.maps.substitution_groups[p.name])
+        return expected
 
     def copy(self) -> 'XsdGroup':
         group: XsdGroup = object.__new__(self.__class__)
         group.__dict__.update(self.__dict__)
         group.errors = self.errors[:]
         group._group = self._group[:]
+        if self.ref is None:
+            group.content = group._group
         return group
 
     __copy__ = copy
@@ -409,7 +473,8 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
         if self.elem.tag != XSD_GROUP:
             # Local group (sequence|all|choice)
             if 'name' in self.elem.attrib:
-                self.parse_error("attribute 'name' not allowed for a local group")
+                msg = _("attribute 'name' not allowed in a local group")
+                self.parse_error(msg)
             self._parse_content_model(self.elem)
 
         elif self._parse_reference():
@@ -417,24 +482,28 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
             try:
                 xsd_group = self.maps.lookup_group(self.name)
             except KeyError:
-                self.parse_error("missing group %r" % self.prefixed_name)
+                self.parse_error(_("missing group %r") % self.prefixed_name)
                 xsd_group = self.schema.create_any_content_group(parent=self)
 
             if isinstance(xsd_group, XsdGroup):
                 self.model = xsd_group.model
                 if self.model == 'all':
                     if self.max_occurs != 1:
-                        self.parse_error("maxOccurs must be 1 for 'all' model groups")
+                        msg = _("maxOccurs must be 1 for 'all' model groups")
+                        self.parse_error(msg)
                     if self.min_occurs not in (0, 1):
-                        self.parse_error("minOccurs must be (0 | 1) for 'all' model groups")
+                        msg = _("minOccurs must be (0 | 1) for 'all' model groups")
+                        self.parse_error(msg)
                     if self.xsd_version == '1.0' and isinstance(self.parent, XsdGroup):
-                        self.parse_error("in XSD 1.0 the 'all' model group cannot be nested")
+                        msg = _("in XSD 1.0 an 'all' model group cannot be nested")
+                        self.parse_error(msg)
                 self._group.append(xsd_group)
                 self.ref = xsd_group
+                self.content = xsd_group._group
             else:
                 # Disallowed circular definition, substitute with any content group.
-                self.parse_error("Circular definitions detected for group %r:" % self.name,
-                                 xsd_group[0])
+                msg = _("Circular definition detected for group %r")
+                self.parse_error(msg % self.name, xsd_group[0])
                 self.model = 'sequence'
                 self.mixed = True
                 self._group.append(self.schema.xsd_any_class(ANY_ELEMENT, self.schema, self))
@@ -447,35 +516,41 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
                 pass
             else:
                 if self.parent is not None:
-                    self.parse_error("attribute 'name' not allowed for a local group")
+                    msg = _("attribute 'name' not allowed in a local group")
+                    self.parse_error(msg)
                 else:
                     if 'minOccurs' in attrib:
-                        self.parse_error("attribute 'minOccurs' not allowed for a global group")
+                        msg = _("attribute 'minOccurs' not allowed in a global group")
+                        self.parse_error(msg)
                     if 'maxOccurs' in attrib:
-                        self.parse_error("attribute 'maxOccurs' not allowed for a global group")
+                        msg = _("attribute 'maxOccurs' not allowed in a global group")
+                        self.parse_error(msg)
 
                 content_model = self._parse_child_component(self.elem, strict=True)
                 if content_model is not None:
                     if self.parent is None:
                         if 'minOccurs' in content_model.attrib:
-                            self.parse_error("attribute 'minOccurs' not allowed for the model "
-                                             "of a global group", content_model)
+                            msg = _("attribute 'minOccurs' not allowed in a global group")
+                            self.parse_error(msg, content_model)
                         if 'maxOccurs' in content_model.attrib:
-                            self.parse_error("attribute 'maxOccurs' not allowed for the model "
-                                             "of a global group", content_model)
+                            msg = _("attribute 'maxOccurs' not allowed in a global group")
+                            self.parse_error(msg, content_model)
 
                     if content_model.tag in {XSD_SEQUENCE, XSD_ALL, XSD_CHOICE}:
                         self._parse_content_model(content_model)
                     else:
-                        self.parse_error('unexpected tag %r' % content_model.tag, content_model)
+                        msg = _('unexpected tag %r')
+                        self.parse_error(msg % content_model.tag, content_model)
 
     def _parse_content_model(self, content_model: ElementType) -> None:
         self.model = local_name(content_model.tag)
         if self.model == 'all':
             if self.max_occurs != 1:
-                self.parse_error("maxOccurs must be 1 for 'all' model groups")
+                msg = _("maxOccurs must be 1 for 'all' model groups")
+                self.parse_error(msg)
             if self.min_occurs not in (0, 1):
-                self.parse_error("minOccurs must be (0 | 1) for 'all' model groups")
+                msg = _("minOccurs must be (0 | 1) for 'all' model groups")
+                self.parse_error(msg)
 
         child: ElementType
         for child in content_model:
@@ -485,7 +560,7 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
                 # Builds inner elements later, for avoid circularity.
                 self.append(self.schema.xsd_element_class(child, self.schema, self, False))
             elif content_model.tag == XSD_ALL:
-                self.parse_error("'all' model can contains only elements.")
+                self.parse_error(_("'all' model can contain only elements"))
             elif child.tag == XSD_ANY:
                 self._group.append(XsdAnyElement(child, self.schema, self))
             elif child.tag in (XSD_SEQUENCE, XSD_CHOICE):
@@ -495,7 +570,8 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
                     ref = self.schema.resolve_qname(child.attrib['ref'])
                 except (KeyError, ValueError, RuntimeError) as err:
                     if 'ref' not in child.attrib:
-                        self.parse_error("missing attribute 'ref' in local group", child)
+                        msg = _("missing attribute 'ref' in local group")
+                        self.parse_error(msg, child)
                     else:
                         self.parse_error(err, child)
                     continue
@@ -503,16 +579,18 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
                 if ref != self.name:
                     xsd_group = XsdGroup(child, self.schema, self)
                     if xsd_group.model == 'all':
-                        self.parse_error("'all' model can appears only at 1st level "
-                                         "of a model group")
+                        msg = _("'all' model can appears only at 1st level of a model group")
+                        self.parse_error(msg)
                     else:
                         self._group.append(xsd_group)
                 elif self.redefine is None:
-                    self.parse_error("Circular definition detected for group %r:" % self.name)
+                    msg = _("Circular definition detected for group %r")
+                    self.parse_error(msg % self.name)
                 else:
                     if child.get('minOccurs', '1') != '1' or child.get('maxOccurs', '1') != '1':
-                        self.parse_error("Redefined group reference cannot have "
-                                         "minOccurs/maxOccurs other than 1:")
+                        msg = _("Redefined group reference cannot have "
+                                "minOccurs/maxOccurs other than 1")
+                        self.parse_error(msg)
                     self._group.append(self.redefine)
 
     def build(self) -> None:
@@ -656,17 +734,13 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
         # Same model: declarations must simply preserve order
         other_iterator = iter(other.iter_model())
         for item in self.iter_model():
-            while True:
-                try:
-                    other_item = next(other_iterator)
-                except StopIteration:
-                    return False
+            for other_item in other_iterator:
                 if other_item is item or item.is_restriction(other_item, check_occurs):
                     break
                 elif other.model == 'choice':
                     if item.max_occurs != 0:
                         continue
-                    elif not other_item.is_matching(item.name, self.default_namespace):
+                    elif not other_item.is_matching(item.name):
                         continue
                     elif all(e.max_occurs == 0 for e in self.iter_model()):
                         return False
@@ -674,18 +748,14 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
                         break
                 elif not other_item.is_emptiable():
                     return False
-
-        if other.model == 'choice':
-            return True
-
-        while True:
-            try:
-                other_item = next(other_iterator)
-            except StopIteration:
-                return True
             else:
+                return False
+
+        if other.model != 'choice':
+            for other_item in other_iterator:
                 if not other_item.is_emptiable():
                     return False
+        return True
 
     def is_all_restriction(self, other: 'XsdGroup') -> bool:
         if not self.has_occurs_restriction(other):
@@ -762,79 +832,6 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
         else:
             return other_max_occurs >= max_occurs * self.max_occurs
 
-    def check_model(self) -> None:
-        """
-        Checks if the model group is deterministic. Element Declarations Consistent and
-        Unique Particle Attribution constraints are checked.
-        :raises: an `XMLSchemaModelError` at first violated constraint.
-        """
-        def safe_iter_path() -> Iterator[SchemaElementType]:
-            iterators: List[Iterator[ModelParticleType]] = []
-            particles = iter(self)
-
-            while True:
-                try:
-                    item = next(particles)
-                except StopIteration:
-                    try:
-                        current_path.pop()
-                        particles = iterators.pop()
-                    except IndexError:
-                        return
-                else:
-                    if isinstance(item, XsdGroup):
-                        current_path.append(item)
-                        iterators.append(particles)
-                        particles = iter(item)
-                        if len(iterators) > limits.MAX_MODEL_DEPTH:
-                            raise XMLSchemaModelDepthError(self)
-                    else:
-                        yield item
-
-        paths: Any = {}
-        current_path: List[ModelParticleType] = [self]
-        try:
-            any_element = self.parent.open_content.any_element  # type: ignore[union-attr]
-        except AttributeError:
-            any_element = None
-
-        for e in safe_iter_path():
-
-            previous_path: List[ModelParticleType]
-            for pe, previous_path in paths.values():
-                # EDC check
-                if not e.is_consistent(pe) or any_element and not any_element.is_consistent(pe):
-                    msg = "Element Declarations Consistent violation between %r and %r: " \
-                          "match the same name but with different types" % (e, pe)
-                    raise XMLSchemaModelError(self, msg)
-
-                # UPA check
-                if pe is e or not pe.is_overlap(e):
-                    continue
-                elif pe.parent is e.parent:
-                    if pe.parent.model in {'all', 'choice'}:
-                        if isinstance(pe, Xsd11AnyElement) and not isinstance(e, XsdAnyElement):
-                            pe.add_precedence(e, self)
-                        elif isinstance(e, Xsd11AnyElement) and not isinstance(pe, XsdAnyElement):
-                            e.add_precedence(pe, self)
-                        else:
-                            msg = "{!r} and {!r} overlap and are in the same {!r} group"
-                            raise XMLSchemaModelError(self, msg.format(pe, e, pe.parent.model))
-                    elif pe.min_occurs == pe.max_occurs:
-                        continue
-
-                if distinguishable_paths(previous_path + [pe], current_path + [e]):
-                    continue
-                elif isinstance(pe, Xsd11AnyElement) and not isinstance(e, XsdAnyElement):
-                    pe.add_precedence(e, self)
-                elif isinstance(e, Xsd11AnyElement) and not isinstance(pe, XsdAnyElement):
-                    e.add_precedence(pe, self)
-                else:
-                    msg = "Unique Particle Attribution violation between {!r} and {!r}"
-                    raise XMLSchemaModelError(self, msg.format(pe, e))
-
-            paths[e.name] = e, current_path[:]
-
     def check_dynamic_context(self, elem: ElementType,
                               xsd_element: SchemaElementType,
                               model_element: SchemaElementType,
@@ -843,9 +840,8 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
         if model_element is not xsd_element and isinstance(model_element, XsdElement):
             if 'substitution' in model_element.block \
                     or xsd_element.type and xsd_element.type.is_blocked(model_element):
-                raise XMLSchemaValidationError(
-                    model_element, elem, "substitution of %r is blocked" % model_element
-                )
+                reason = _("substitution of %r is blocked") % model_element
+                raise XMLSchemaValidationError(model_element, elem, reason)
 
         alternatives: Union[Tuple[()], List[XsdAlternative]] = []
         if isinstance(xsd_element, XsdAnyElement):
@@ -855,6 +851,10 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
             try:
                 xsd_element = self.maps.lookup_element(elem.tag)
             except LookupError:
+                if self.schema.meta_schema is None:
+                    # Meta-schema groups ignore xsi:type (issue #350)
+                    return
+
                 try:
                     type_name = elem.attrib[XSI_TYPE].strip()
                 except KeyError:
@@ -875,7 +875,7 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
                     )
 
         else:
-            if XSI_TYPE not in elem.attrib:
+            if XSI_TYPE not in elem.attrib or self.schema.meta_schema is None:
                 xsd_type = xsd_element.type
             else:
                 alternatives = xsd_element.alternatives
@@ -893,12 +893,11 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
                 for derivation in model_element.block.split():
                     if xsd_type is not model_element.type and \
                             xsd_type.is_derived(model_element.type, derivation):
-                        reason = "usage of %r with type %s is blocked by head element"
-                        raise XMLSchemaValidationError(
-                            self, elem, reason % (xsd_element, derivation)
-                        )
+                        reason = _("usage of {0!r} with type {1} is blocked by "
+                                   "head element").format(xsd_element, derivation)
+                        raise XMLSchemaValidationError(self, elem, reason)
 
-            if XSI_TYPE not in elem.attrib:
+            if XSI_TYPE not in elem.attrib or self.schema.meta_schema is None:
                 return
 
         # If it's a restriction the context is the base_type's group
@@ -919,22 +918,23 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
 
             if len(other.alternatives) != len(alternatives) or \
                     not xsd_type.is_dynamic_consistent(other.type):
-                reason = "%r that matches %r is not consistent with local declaration %r"
-                raise XMLSchemaValidationError(self, reason % (elem, xsd_element, other))
+                reason = _("{0!r} that matches {1!r} is not consistent with local "
+                           "declaration {2!r}").format(elem, xsd_element, other)
+                raise XMLSchemaValidationError(self, reason)
 
             if not all(any(a == x for x in alternatives) for a in other.alternatives) or \
                     not all(any(a == x for x in other.alternatives) for a in alternatives):
-                msg = "Maybe a not equivalent type table between elements %r and %r."
-                warnings.warn(msg % (self, xsd_element), XMLSchemaTypeTableWarning, stacklevel=3)
+                msg = _("Maybe a not equivalent type table between elements "
+                        "{0!r} and {1!r}.").format(self, xsd_element)
+                warnings.warn(msg, XMLSchemaTypeTableWarning, stacklevel=3)
 
-    def match_element(self, name: str, default_namespace: Optional[str] = None) \
-            -> Optional[SchemaElementType]:
+    def match_element(self, name: str) -> Optional[SchemaElementType]:
         """
         Try a model-less match of a child element. Returns the
         matched element, or `None` if there is no match.
         """
         for xsd_element in self.iter_elements():
-            if xsd_element.is_matching(name, default_namespace, group=self):
+            if xsd_element.is_matching(name, group=self):
                 return xsd_element
         return None
 
@@ -953,7 +953,7 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
         cdata_index = 1  # keys for CDATA sections are positive integers
 
         if not self._group and self.model == 'choice' and self.min_occurs:
-            reason = "an empty 'choice' group with minOccurs > 0 cannot validate any content"
+            reason = _("an empty 'choice' group with minOccurs > 0 cannot validate any content")
             yield self.validation_error(validation, reason, obj, **kwargs)
             yield result_list
             return
@@ -965,7 +965,7 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
                 if len(self) == 1 and isinstance(self[0], XsdAnyElement):
                     pass  # [XsdAnyElement()] equals to an empty complexType declaration
                 else:
-                    reason = "character data between child elements not allowed"
+                    reason = _("character data between child elements not allowed")
                     yield self.validation_error(validation, reason, obj, **kwargs)
                     cdata_index = 0  # Do not decode CDATA
 
@@ -975,49 +975,45 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
                 result_list.append((cdata_index, text, None))
                 cdata_index += 1
 
-        level = kwargs['level'] = kwargs.pop('level', 0) + 1
+        try:
+            level = kwargs['level'] = kwargs['level'] + 1
+        except KeyError:
+            level = kwargs['level'] = 1
+
         over_max_depth = 'max_depth' in kwargs and kwargs['max_depth'] <= level
         if level > limits.MAX_XML_DEPTH:
-            reason = "XML data depth exceeded (MAX_XML_DEPTH=%r)" % limits.MAX_XML_DEPTH
+            reason = _("XML data depth exceeded (MAX_XML_DEPTH=%r)") % limits.MAX_XML_DEPTH
             self.validation_error('strict', reason, obj, **kwargs)
 
         try:
-            namespaces = kwargs['namespaces']
+            converter = kwargs['converter']
         except KeyError:
-            namespaces = default_namespace = None
-        else:
-            try:
-                default_namespace = namespaces.get('')
-            except AttributeError:
-                default_namespace = None
+            converter = self._get_converter(obj, kwargs)
 
         errors: List[Tuple[int, ModelParticleType, int, Optional[List[SchemaElementType]]]]
         xsd_element: Optional[SchemaElementType]
         expected: Optional[List[SchemaElementType]]
 
-        model = ModelVisitor(self)
         errors = []
         broken_model = False
+        namespaces = converter.namespaces
+        model = self.get_model_visitor()
 
         for index, child in enumerate(obj):
             if callable(child.tag):
-                continue  # child is a <class 'lxml.etree._Comment'>
+                continue  # child is a comment or PI
+
+            converter.set_context(child, level)
+            name = converter.map_qname(child.tag)
 
             while model.element is not None:
-                xsd_element = model.element.match(
-                    child.tag, default_namespace, group=self, occurs=model.occurs
-                )
+                xsd_element = model.match_element(child.tag)
                 if xsd_element is None:
-                    if self.interleave is not None and self.interleave.is_matching(
-                            child.tag, default_namespace, self, model.occurs):
-                        xsd_element = self.interleave
-                        break
-
                     for particle, occurs, expected in model.advance(False):
                         errors.append((index, particle, occurs, expected))
                         model.clear()
                         broken_model = True  # the model is broken, continues with raw decoding.
-                        xsd_element = self.match_element(child.tag, default_namespace)
+                        xsd_element = self.match_element(child.tag)
                         break
                     else:
                         continue
@@ -1032,40 +1028,30 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
                     errors.append((index, particle, occurs, expected))
                 break
             else:
-                if self.suffix is not None and \
-                        self.suffix.is_matching(child.tag, default_namespace, self):
-                    xsd_element = self.suffix
-                else:
-                    xsd_element = self.match_element(child.tag, default_namespace)
-                    if xsd_element is None:
-                        errors.append((index, self, 0, None))
-                        broken_model = True
-                    elif not broken_model:
-                        errors.append((index, xsd_element, 0, []))
-                        broken_model = True
+                xsd_element = self.match_element(child.tag)
+                if xsd_element is None:
+                    errors.append((index, self, 0, None))
+                    broken_model = True
+                elif not broken_model:
+                    errors.append((index, xsd_element, 0, []))
+                    broken_model = True
 
             if xsd_element is None:
-                if kwargs.get('keep_unknown') and 'converter' in kwargs:
+                if kwargs.get('keep_unknown'):
                     for result in self.any_type.iter_decode(child, validation, **kwargs):
-                        result_list.append((child.tag, result, None))
-                continue
-            elif 'converter' not in kwargs:
-                # Validation-only mode: do not append results
-                for result in xsd_element.iter_decode(child, validation, **kwargs):
-                    if isinstance(result, XMLSchemaValidationError):
-                        yield result
+                        result_list.append((name, result, None))
                 continue
             elif over_max_depth:
                 if 'depth_filler' in kwargs:
                     func = kwargs['depth_filler']
-                    result_list.append((child.tag, func(xsd_element), xsd_element))
+                    result_list.append((name, func(xsd_element), xsd_element))
                 continue
 
             for result in xsd_element.iter_decode(child, validation, **kwargs):
                 if isinstance(result, XMLSchemaValidationError):
                     yield result
                 else:
-                    result_list.append((child.tag, result, xsd_element))
+                    result_list.append((name, result, xsd_element))
 
             if cdata_index and child.tail is not None:
                 tail = str(child.tail.strip())
@@ -1081,12 +1067,22 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
             index = len(obj)
             for particle, occurs, expected in model.stop():
                 errors.append((index, particle, occurs, expected))
+                break
 
         if errors:
             source = kwargs.get('source')
+            namespaces = converter.namespaces
+
             for index, particle, occurs, expected in errors:
                 error = XMLSchemaChildrenValidationError(
-                    self, obj, index, particle, occurs, expected, source, namespaces
+                    validator=self,
+                    elem=obj,
+                    index=index,
+                    particle=particle,
+                    occurs=occurs,
+                    expected=expected,
+                    source=source,
+                    namespaces=namespaces,
                 )
                 if validation == 'strict':
                     raise error
@@ -1105,44 +1101,42 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
         :return: yields a couple with the text of the Element and a list of child \
         elements, eventually preceded by a sequence of validation errors.
         """
-        level = kwargs['level'] = kwargs.get('level', 0) + 1
         errors = []
         text = raw_xml_encode(obj.text)
         children: List[ElementType] = []
-        try:
-            indent = kwargs['indent']
-        except KeyError:
-            indent = 4
-
-        padding = '\n' + ' ' * indent * level
 
         try:
-            converter = kwargs['converter']
+            level = kwargs['level'] = kwargs['level'] + 1
         except KeyError:
-            converter = kwargs['converter'] = self.schema.get_converter(**kwargs)
+            level = kwargs['level'] = 1
 
+        converter = kwargs['converter']
+        padding = '\n' + ' ' * converter.indent * level
         default_namespace = converter.get('')
-        model = ModelVisitor(self)
+
         index = cdata_index = 0
         wrong_content_type = False
         over_max_depth = 'max_depth' in kwargs and kwargs['max_depth'] <= level
+        model = self.get_model_visitor()
 
         content: Iterable[Any]
-        if obj.content is None:
+        if not obj.content:
             content = []
         elif isinstance(obj.content, MutableMapping) or kwargs.get('unordered'):
-            content = ModelVisitor(self).iter_unordered_content(
-                obj.content, default_namespace
-            )
+            content = iter_unordered_content(obj.content, self)
         elif not isinstance(obj.content, MutableSequence):
             wrong_content_type = True
+            content = []
+        elif not isinstance(obj.content[0], tuple):
+            if len(obj.content) > 1 or text is not None:
+                wrong_content_type = True
+            else:
+                text = raw_xml_encode(obj.content[0])
             content = []
         elif converter.losslessly:
             content = obj.content
         else:
-            content = ModelVisitor(self).iter_collapsed_content(
-                obj.content, default_namespace
-            )
+            content = iter_collapsed_content(obj.content, self)
 
         for index, (name, value) in enumerate(content):
             if isinstance(name, int):
@@ -1156,43 +1150,33 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
                 continue
 
             xsd_element: Optional[SchemaElementType]
-            if self.interleave and self.interleave.is_matching(name, default_namespace, group=self):
-                xsd_element = self.interleave
-                value = get_qname(default_namespace, name), value
-            else:
-                while model.element is not None:
-                    xsd_element = model.element.match(
-                        name, default_namespace, group=self, occurs=model.occurs
-                    )
-                    if xsd_element is None:
-                        for particle, occurs, expected in model.advance():
-                            errors.append((index - cdata_index, particle, occurs, expected))
-                        continue
-                    elif isinstance(xsd_element, XsdAnyElement):
-                        value = get_qname(default_namespace, name), value
-
-                    for particle, occurs, expected in model.advance(True):
+            while model.element is not None:
+                xsd_element = model.match_element(name)
+                if xsd_element is None:
+                    for particle, occurs, expected in model.advance():
                         errors.append((index - cdata_index, particle, occurs, expected))
-                    break
-                else:
-                    if self.suffix and self.suffix.is_matching(name, default_namespace, group=self):
-                        xsd_element = self.suffix
-                        value = get_qname(default_namespace, name), value
+                    continue
+                elif isinstance(xsd_element, XsdAnyElement):
+                    value = get_qname(default_namespace, name), value
+
+                for particle, occurs, expected in model.advance(True):
+                    errors.append((index - cdata_index, particle, occurs, expected))
+                break
+            else:
+                errors.append((index - cdata_index, self, 0, []))
+                xsd_element = self.match_element(name)
+                if isinstance(xsd_element, XsdAnyElement):
+                    value = get_qname(default_namespace, name), value
+                elif xsd_element is None:
+                    if name.startswith('{') or ':' not in name:
+                        reason = _('{!r} does not match any declared element '
+                                   'of the model group').format(name)
                     else:
-                        errors.append((index - cdata_index, self, 0, []))
-                        xsd_element = self.match_element(name, default_namespace)
-                        if isinstance(xsd_element, XsdAnyElement):
-                            value = get_qname(default_namespace, name), value
-                        elif xsd_element is None:
-                            if name.startswith('{') or ':' not in name:
-                                reason = '{!r} does not match any declared element ' \
-                                         'of the model group.'.format(name)
-                            else:
-                                reason = '{} has an unknown prefix {!r}'.format(
-                                    name, name.split(':')[0]
-                                )
-                            yield self.validation_error(validation, reason, value, **kwargs)
-                            continue
+                        reason = _('{0} has an unknown prefix {1!r}').format(
+                            name, name.split(':')[0]
+                        )
+                    yield self.validation_error(validation, reason, value, **kwargs)
+                    continue
 
             if over_max_depth:
                 continue
@@ -1206,12 +1190,15 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
         if model.element is not None:
             for particle, occurs, expected in model.stop():
                 errors.append((index - cdata_index + 1, particle, occurs, expected))
+                break
 
         if children:
             if children[-1].tail is None:
-                children[-1].tail = padding[:-indent] or '\n'
+                children[-1].tail = padding[:-converter.indent] or '\n'
             else:
-                children[-1].tail = children[-1].tail.strip() + (padding[:-indent] or '\n')
+                children[-1].tail = children[-1].tail.strip() + (
+                        padding[:-converter.indent] or '\n'
+                )
 
         cdata_not_allowed = not self.mixed and text and text.strip() and self and \
             (len(self) > 1 or not isinstance(self[0], XsdAnyElement))
@@ -1219,13 +1206,14 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
         if errors or cdata_not_allowed or wrong_content_type:
             attrib = {k: raw_xml_encode(v) for k, v in obj.attributes.items()}
             elem = converter.etree_element(obj.tag, text, children, attrib)
+            namespaces = converter.namespaces
 
             if wrong_content_type:
-                reason = "wrong content type {!r}".format(type(obj.content))
+                reason = _("wrong content type {!r}").format(type(obj.content))
                 yield self.validation_error(validation, reason, elem, **kwargs)
 
             if cdata_not_allowed:
-                reason = "character data between child elements not allowed"
+                reason = _("character data between child elements not allowed")
                 yield self.validation_error(validation, reason, elem, **kwargs)
 
             for index, particle, occurs, expected in errors:
@@ -1236,7 +1224,7 @@ class XsdGroup(XsdComponent, MutableSequence[ModelParticleType],
                     particle=particle,
                     occurs=occurs,
                     expected=expected,
-                    namespaces=converter.namespaces,
+                    namespaces=namespaces,
                 )
                 if validation == 'strict':
                     raise error
@@ -1252,7 +1240,7 @@ class Xsd11Group(XsdGroup):
     Class for XSD 1.1 *model group* definitions.
 
     .. The XSD 1.1 model groups differ from XSD 1.0 groups for the 'all' model,
-    .. that can contains also other groups.
+       that can contains also other groups.
     ..  <all
           id = ID
           maxOccurs = (0 | 1) : 1
@@ -1265,9 +1253,11 @@ class Xsd11Group(XsdGroup):
         self.model = local_name(content_model.tag)
         if self.model == 'all':
             if self.max_occurs not in (0, 1):
-                self.parse_error("maxOccurs must be (0 | 1) for 'all' model groups")
+                msg = _("maxOccurs must be (0 | 1) for 'all' model groups")
+                self.parse_error(msg)
             if self.min_occurs not in (0, 1):
-                self.parse_error("minOccurs must be (0 | 1) for 'all' model groups")
+                msg = _("minOccurs must be (0 | 1) for 'all' model groups")
+                self.parse_error(msg)
 
         for child in content_model:
             if child.tag == XSD_ELEMENT:
@@ -1282,7 +1272,8 @@ class Xsd11Group(XsdGroup):
                     ref = self.schema.resolve_qname(child.attrib['ref'])
                 except (KeyError, ValueError, RuntimeError) as err:
                     if 'ref' not in child.attrib:
-                        self.parse_error("missing attribute 'ref' in local group", child)
+                        msg = _("missing attribute 'ref' in local group")
+                        self.parse_error(msg, child)
                     else:
                         self.parse_error(err, child)
                     continue
@@ -1291,16 +1282,19 @@ class Xsd11Group(XsdGroup):
                     xsd_group = Xsd11Group(child, self.schema, self)
                     self._group.append(xsd_group)
                     if (self.model != 'all') ^ (xsd_group.model != 'all'):
-                        msg = "an xs:%s group cannot include a reference to an xs:%s group"
-                        self.parse_error(msg % (self.model, xsd_group.model))
+                        msg = _("an xs:{0} group cannot include a reference to an "
+                                "xs:{1} group").format(self.model, xsd_group.model)
+                        self.parse_error(msg)
                         self.pop()
 
                 elif self.redefine is None:
-                    self.parse_error("Circular definition detected for group %r:" % self.name)
+                    msg = _("Circular definition detected for group %r")
+                    self.parse_error(msg % self.name)
                 else:
                     if child.get('minOccurs', '1') != '1' or child.get('maxOccurs', '1') != '1':
-                        self.parse_error("Redefined group reference cannot have "
-                                         "minOccurs/maxOccurs other than 1:")
+                        msg = _("Redefined group reference cannot have "
+                                "minOccurs/maxOccurs other than 1")
+                        self.parse_error(msg)
                     self._group.append(self.redefine)
 
     def admits_restriction(self, model: str) -> bool:
@@ -1334,6 +1328,26 @@ class Xsd11Group(XsdGroup):
         else:  # other.model == 'choice':
             return self.is_choice_restriction(other)
 
+    def has_occurs_restriction(
+            self, other: Union[ModelParticleType, ParticleMixin, 'OccursCalculator']) -> bool:
+        if not isinstance(other, XsdGroup):
+            return super().has_occurs_restriction(other)
+        elif not self:
+            return True
+        elif self.effective_min_occurs < other.effective_min_occurs:
+            return False
+
+        effective_max_occurs = self.effective_max_occurs
+        if effective_max_occurs == 0:
+            return True
+        elif effective_max_occurs is None:
+            return other.effective_max_occurs is None
+
+        try:
+            return effective_max_occurs <= other.effective_max_occurs  # type: ignore[operator]
+        except TypeError:
+            return True
+
     def is_sequence_restriction(self, other: XsdGroup) -> bool:
         if not self.has_occurs_restriction(other):
             return False
@@ -1360,12 +1374,22 @@ class Xsd11Group(XsdGroup):
             if item is not None and item.is_restriction(other_item, check_occurs):
                 item = next(item_iterator, None)
             elif not other_item.is_emptiable():
+                break
+        else:
+            if item is None:
+                return True
+
+        # Restriction check failed again: try checking other items against self
+        other_items = other.iter_model()
+        for other_item in other_items:
+            if self.is_restriction(other_item, check_occurs):
+                return all(x.is_emptiable() for x in other_items)
+            elif not other_item.is_emptiable():
                 return False
-        return item is None
+        else:
+            return False
 
     def is_all_restriction(self, other: XsdGroup) -> bool:
-        if not self.has_occurs_restriction(other):
-            return False
         restriction_items = [x for x in self.iter_model()]
 
         base_items = [x for x in other.iter_model()]
@@ -1381,7 +1405,7 @@ class Xsd11Group(XsdGroup):
                         w2.extended = True
                         break
                 else:
-                    wildcards.append(w1.copy())
+                    wildcards.append(_copy(w1))
 
         base_items.extend(w for w in wildcards if hasattr(w, 'extended'))
 
@@ -1506,7 +1530,7 @@ class Xsd11Group(XsdGroup):
                     break
                 elif item.max_occurs != 0:
                     continue
-                elif not other_item.is_matching(item.name, self.default_namespace):
+                elif not other_item.is_matching(item.name):
                     continue
                 elif has_not_empty_item:
                     break

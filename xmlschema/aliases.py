@@ -16,44 +16,52 @@ so they are set with a common dummy subscriptable type to keep compatibility.
 from typing import TYPE_CHECKING, Optional, TypeVar
 
 __all__ = ['ElementType', 'ElementTreeType', 'XMLSourceType', 'NamespacesType',
-           'NormalizedLocationsType', 'LocationsType', 'NsmapType', 'ParentMapType',
-           'LazyType', 'SchemaType', 'BaseXsdType', 'SchemaElementType',
+           'NormalizedLocationsType', 'LocationsType', 'NsmapType', 'XmlnsType',
+           'ParentMapType', 'LazyType', 'SchemaType', 'BaseXsdType', 'SchemaElementType',
            'SchemaAttributeType', 'SchemaGlobalType', 'GlobalMapType', 'ModelGroupType',
            'ModelParticleType', 'XPathElementType', 'AtomicValueType', 'NumericValueType',
            'DateTimeType', 'SchemaSourceType', 'ConverterType', 'ComponentClassType',
-           'ExtraValidatorType', 'DecodeType', 'IterDecodeType', 'JsonDecodeType',
-           'EncodeType', 'IterEncodeType', 'DecodedValueType', 'EncodedValueType']
+           'ExtraValidatorType', 'ValidationHookType', 'DecodeType', 'IterDecodeType',
+           'JsonDecodeType', 'EncodeType', 'IterEncodeType', 'DecodedValueType',
+           'EncodedValueType', 'FillerType', 'DepthFillerType', 'ValueHookType',
+           'ElementHookType', 'UriMapperType', 'OccursCounterType']
 
 if TYPE_CHECKING:
-    from pathlib import Path
     from decimal import Decimal
-    from typing import Callable, Dict, List, IO, Iterator, MutableMapping, Tuple, Type, Union
+    from pathlib import Path
+    from typing import Any, Callable, Counter, Dict, List, IO, Iterator, \
+        MutableMapping, Tuple, Type, Union
+    from xml.etree import ElementTree
 
     from elementpath.datatypes import NormalizedString, QName, Float10, Integer, \
         Time, Base64Binary, HexBinary, AnyURI, Duration
     from elementpath.datatypes.datetime import OrderedDateTime
 
-    from .etree import ElementTree
+    from .namespaces import NamespaceResourcesMap
     from .resources import XMLResource
-    from .converters import XMLSchemaConverter
+    from .converters import ElementData, XMLSchemaConverter
     from .validators import XMLSchemaValidationError, XsdComponent, XMLSchemaBase, \
         XsdComplexType, XsdSimpleType, XsdElement, XsdAnyElement, XsdAttribute, \
-        XsdAnyAttribute, XsdAssert, XsdGroup, XsdAttributeGroup, XsdNotation
+        XsdAnyAttribute, XsdAssert, XsdGroup, XsdAttributeGroup, XsdNotation, \
+        ParticleMixin
 
     ##
     # Type aliases for ElementTree
     ElementType = ElementTree.Element
     ElementTreeType = ElementTree.ElementTree
     XMLSourceType = Union[str, bytes, Path, IO[str], IO[bytes], ElementType, ElementTreeType]
-    NamespacesType = MutableMapping[str, str]
 
     ##
     # Type aliases for XML resources
+    NamespacesType = MutableMapping[str, str]
     NormalizedLocationsType = List[Tuple[str, str]]
-    LocationsType = Union[Tuple[Tuple[str, str], ...], Dict[str, str], NormalizedLocationsType]
-    NsmapType = Union[List[Tuple[str, str]], MutableMapping[str, str]]
+    LocationsType = Union[Tuple[Tuple[str, str], ...], Dict[str, str],
+                          NormalizedLocationsType, NamespaceResourcesMap]
+    NsmapType = MutableMapping[str, str]
+    XmlnsType = Optional[List[Tuple[str, str]]]
     ParentMapType = Dict[ElementType, Optional[ElementType]]
     LazyType = Union[bool, int]
+    UriMapperType = Union[MutableMapping[str, str], Callable[[str], str]]
 
     ##
     # Type aliases for XSD components
@@ -68,6 +76,9 @@ if TYPE_CHECKING:
 
     ModelGroupType = XsdGroup
     ModelParticleType = Union[XsdElement, XsdAnyElement, XsdGroup]
+    OccursCounterType = Counter[
+        Union[ParticleMixin, ModelParticleType, Tuple[ModelGroupType], None]
+    ]
     ComponentClassType = Union[None, Type[XsdComponent], Tuple[Type[XsdComponent], ...]]
     XPathElementType = Union[XsdElement, XsdAnyElement, XsdAssert]
 
@@ -76,16 +87,18 @@ if TYPE_CHECKING:
 
     ##
     # Type aliases for datatypes
-    AtomicValueType = Union[str, int, float, Decimal, bool, Integer, Float10, NormalizedString,
-                            AnyURI, HexBinary, Base64Binary, QName, Duration, OrderedDateTime, Time]
+    AtomicValueType = Union[str, bytes, int, float, Decimal, bool, Integer,
+                            Float10, NormalizedString, AnyURI, HexBinary,
+                            Base64Binary, QName, Duration, OrderedDateTime, Time]
     NumericValueType = Union[str, bytes, int, float, Decimal]
     DateTimeType = Union[OrderedDateTime, Time]
 
     ##
     # Type aliases for validation/decoding/encoding
     ConverterType = Union[Type[XMLSchemaConverter], XMLSchemaConverter]
-    ExtraValidatorType = Callable[[ElementType, SchemaType],
+    ExtraValidatorType = Callable[[ElementType, XsdElement],
                                   Optional[Iterator[XMLSchemaValidationError]]]
+    ValidationHookType = Callable[[ElementType, XsdElement], Union[bool, str]]
 
     D = TypeVar('D')
     DecodeType = Union[Optional[D], Tuple[Optional[D], List[XMLSchemaValidationError]]]
@@ -98,8 +111,16 @@ if TYPE_CHECKING:
     JsonDecodeType = Union[str, None, Tuple[XMLSchemaValidationError, ...],
                            Tuple[Union[str, None], Tuple[XMLSchemaValidationError, ...]]]
 
-    DecodedValueType = Union[None, AtomicValueType, List[AtomicValueType]]
-    EncodedValueType = Union[None, str, List[str]]
+    DecodedValueType = Union[None, AtomicValueType, List[Optional[AtomicValueType]],
+                             XMLSchemaValidationError]
+    EncodedValueType = Union[None, str, List[str], XMLSchemaValidationError]
+
+    FillerType = Callable[[Union[XsdElement, XsdAttribute]], Any]
+    DepthFillerType = Callable[[XsdElement], Any]
+    ValueHookType = Callable[[AtomicValueType, BaseXsdType], Any]
+    ElementHookType = Callable[
+        [ElementData, Optional[XsdElement], Optional[BaseXsdType]], ElementData
+    ]
 
 else:
     # In runtime use a dummy subscriptable type for compatibility

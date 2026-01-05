@@ -15,6 +15,7 @@ import unittest
 import argparse
 import os.path
 import warnings
+from xml.etree import ElementTree
 
 try:
     import lxml.etree as lxml_etree
@@ -22,7 +23,6 @@ except ImportError:
     lxml_etree = None
 
 from xmlschema import validate, XMLSchema10, XMLSchema11, XMLSchemaException
-from xmlschema.etree import ElementTree
 
 TEST_SUITE_NAMESPACE = "http://www.w3.org/XML/2004/xml-schema-test-suite/"
 XLINK_NAMESPACE = "http://www.w3.org/1999/xlink"
@@ -93,7 +93,6 @@ SKIPPED_TESTS = {
     # 3984: Invalid if lxml is used (xsi:type and duplicate prefix)
     '../msData/additional/test93490_4.xml',
     # 4795: https://www.w3.org/Bugs/Public/show_bug.cgi?id=4078
-    '../msData/additional/test93490_8.xml',  # 4799: Idem
     '../msData/datatypes/gMonth002.xml',
     # 8017: gMonth bogus: conflicts with other invalid schema tests
     '../msData/datatypes/gMonth004.xml',
@@ -165,16 +164,6 @@ SKIPPED_TESTS = {
     '../saxonData/XmlVersions/xv009.n03.xml',
     '../saxonData/XmlVersions/xv100.i.xml',    # 14859
     '../saxonData/XmlVersions/xv100.c.xml',    # 14860
-
-    ##
-    # Skip for TODO
-    '../msData/additional/test93490_2.xml',  # 4793
-    '../msData/additional/test93490_5.xml',  # 4796
-    '../msData/additional/test93490_7.xml',  # 4798
-    '../msData/additional/test93490_10.xml',  # 4801
-    '../msData/additional/test93490_12.xml',  # 4803
-    '../msData/additional/addB191.xml',       # 4824
-    # Dynamic schema load cases
 }
 
 XSD10_SKIPPED_TESTS = {
@@ -189,6 +178,15 @@ XSD11_SKIPPED_TESTS = {
     '../msData/regex/reK87.xsd',                # \P{Is} is valid in regex for XSD 1.1
     '../msData/particles/particlesZ033_g.xsd',  # valid in XSD 1.1 (invalid for engine limitation)
     '../saxonData/CTA/cta0043.xsd',  # Only a warning for type table difference on restriction
+
+    ##
+    # XSD 1.1 schema composition (dynamic schema load)
+    # (See bullet 4 of G.1.15: https://www.w3.org/TR/xmlschema11-1/#ch_schemacomp)
+    '../msData/additional/test93490_5.xml',  # 4796
+    '../msData/additional/test93490_7.xml',  # 4798
+    '../msData/additional/test93490_8.xml',  # 4799
+    '../msData/additional/test93490_10.xml',  # 4801
+    '../msData/additional/test93490_12.xml',  # 4803
 
     # TODO: Parse ENTITY declarations in DOCTYPE before enforce checking
     '../saxonData/Id/id017.n01.xml',     # 14571-14575
@@ -388,7 +386,7 @@ def create_w3c_test_group_case(args, filename, group_elem, group_num, xsd_versio
 
                     schema_class = XMLSchema11 if version == '1.1' else XMLSchema10
                     if expected == 'invalid':
-                        message = "schema %s should be invalid with XSD %s" % (rel_path, version)
+                        message = f"schema {rel_path} should be invalid with XSD {version}"
                         with self.assertRaises(XMLSchemaException, msg=message):
                             with warnings.catch_warnings():
                                 warnings.simplefilter('ignore')
@@ -443,7 +441,7 @@ def create_w3c_test_group_case(args, filename, group_elem, group_num, xsd_versio
                 for version, expected in sorted(filter(lambda x: x[0] != 'source', item.items())):
                     schema_class = XMLSchema11 if version == '1.1' else XMLSchema10
                     if expected == 'invalid':
-                        message = "instance %s should be invalid with XSD %s" % (rel_path, version)
+                        message = f"instance {rel_path} should be invalid with XSD {version}"
                         with self.assertRaises((XMLSchemaException, ElementTree.ParseError),
                                                msg=message):
                             with warnings.catch_warnings():
@@ -485,7 +483,7 @@ def create_w3c_test_group_case(args, filename, group_elem, group_num, xsd_versio
         del TestGroupCase.test_xml_instances
 
     TestGroupCase.__name__ = TestGroupCase.__qualname__ = str(
-        'TestGroupCase{0:05}_{1}'.format(group_num, name.replace('-', '_'))
+        'TestGroupCase{:05}_{}'.format(group_num, name.replace('-', '_'))
     )
     return TestGroupCase
 
@@ -605,7 +603,7 @@ def w3c_tests_factory(argv=None):
                 testset_groups += 1
 
         if args.verbose and testset_groups and not quiet:
-            print("Added {} test groups from {}".format(testset_groups, href_attr))
+            print(f"Added {testset_groups} test groups from {href_attr}")
 
     if test_classes and not quiet:
         print("\n+++ Number of classes under test: %d +++" % len(test_classes))

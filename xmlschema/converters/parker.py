@@ -10,9 +10,9 @@
 from collections.abc import MutableMapping, MutableSequence
 from typing import TYPE_CHECKING, Any, Optional, List, Dict, Type
 
-from ..etree import ElementData
 from ..aliases import NamespacesType, BaseXsdType
-from .default import XMLSchemaConverter
+from ..resources import XMLResource
+from .default import ElementData, XMLSchemaConverter
 
 if TYPE_CHECKING:
     from ..validators import XsdElement
@@ -38,24 +38,32 @@ class ParkerConverter(XMLSchemaConverter):
                  list_class: Optional[Type[List[Any]]] = None,
                  preserve_root: bool = False, **kwargs: Any) -> None:
         kwargs.update(attr_prefix=None, text_key='', cdata_prefix=None)
-        super(ParkerConverter, self).__init__(
-            namespaces, dict_class, list_class,
-            preserve_root=preserve_root, **kwargs
+        super().__init__(
+            namespaces, dict_class, list_class, preserve_root=preserve_root, **kwargs
         )
 
     @property
+    def xmlns_processing_default(self) -> str:
+        return 'stacked' if isinstance(self.source, XMLResource) else 'none'
+
+    @property
     def lossy(self) -> bool:
+        return True
+
+    @property
+    def loss_xmlns(self) -> bool:
         return True
 
     def element_decode(self, data: ElementData, xsd_element: 'XsdElement',
                        xsd_type: Optional[BaseXsdType] = None, level: int = 0) -> Any:
         xsd_type = xsd_type or xsd_element.type
         preserve_root = self.preserve_root
-        if xsd_type.simple_type is not None:
+
+        if xsd_type.model_group is None or not data.content:
             if preserve_root:
                 return self.dict([(self.map_qname(data.tag), data.text)])
             else:
-                return data.text if data.text != '' else None
+                return data.text
         else:
             result_dict = self.dict()
             for name, value, xsd_child in self.map_content(data.content):
@@ -87,31 +95,26 @@ class ParkerConverter(XMLSchemaConverter):
                 return result_dict if result_dict else None
 
     def element_encode(self, obj: Any, xsd_element: 'XsdElement', level: int = 0) -> ElementData:
-        name: str = xsd_element.name
+        tag: str = xsd_element.name
         if not isinstance(obj, MutableMapping):
             if obj == '':
                 obj = None
             if xsd_element.type.simple_type is not None:
-                return ElementData(xsd_element.name, obj, None, {})
+                return ElementData(tag, obj, None, {}, None)
             else:
-                return ElementData(xsd_element.name, None, obj, {})
+                return ElementData(tag, None, obj, {}, None)
         else:
             if not obj:
-                return ElementData(xsd_element.name, None, None, {})
+                return ElementData(tag, None, None, {}, None)
             elif self.preserve_root:
                 try:
-                    items = obj[self.map_qname(name)]
+                    items = obj[self.map_qname(tag)]
                 except KeyError:
-                    return ElementData(xsd_element.name, None, None, {})
+                    return ElementData(tag, None, None, {}, None)
             else:
                 items = obj
 
             try:
-                xsd_group = xsd_element.type.model_group
-                if xsd_group is None:
-                    xsd_group = xsd_element.any_type.model_group
-                    assert xsd_group is not None
-
                 content = []
                 for name, value in obj.items():
                     ns_name = self.unmap_qname(name)
@@ -121,18 +124,17 @@ class ParkerConverter(XMLSchemaConverter):
                         for item in value:
                             content.append((ns_name, item))
                     else:
-                        for xsd_child in xsd_group.iter_elements():
-                            matched_element = xsd_child.match(ns_name, resolve=True)
-                            if matched_element is not None:
-                                if matched_element.type and matched_element.type.is_list():
-                                    content.append((ns_name, value))
-                                else:
-                                    content.extend((ns_name, item) for item in value)
-                                break
+                        ns_name = self.unmap_qname(name)
+                        xsd_child = xsd_element.match_child(ns_name)
+                        if xsd_child is not None:
+                            if xsd_child.type and xsd_child.type.is_list():
+                                content.append((ns_name, value))
+                            else:
+                                content.extend((ns_name, item) for item in value)
                         else:
                             content.extend((ns_name, item) for item in value)
 
             except AttributeError:
-                return ElementData(xsd_element.name, items, None, {})
+                return ElementData(tag, items, None, {}, None)
             else:
-                return ElementData(xsd_element.name, None, content, {})
+                return ElementData(tag, None, content, {}, None)

@@ -7,22 +7,20 @@
 #
 # @author Davide Brunato <brunato@sissa.it>
 #
-import sys
-if sys.version_info < (3, 7):
-    from typing import GenericMeta as ABCMeta
-else:
-    from abc import ABCMeta
-
+from abc import ABCMeta
+from copy import copy
 from itertools import count
 from typing import TYPE_CHECKING, cast, overload, Any, Dict, List, Iterator, \
     Optional, Union, Tuple, Type, MutableMapping, MutableSequence
-from elementpath import XPathContext, XPath2Parser
+
+from elementpath import XPathContext, XPath2Parser, build_node_tree
+from elementpath.etree import etree_tostring
 
 from .exceptions import XMLSchemaAttributeError, XMLSchemaTypeError, XMLSchemaValueError
-from .etree import ElementData, etree_tostring
 from .aliases import ElementType, XMLSourceType, NamespacesType, BaseXsdType, DecodeType
-from .helpers import get_namespace, get_prefixed_qname, local_name, raw_xml_encode
-from .converters import XMLSchemaConverter
+from .helpers import get_namespace, get_prefixed_qname, local_name, update_namespaces, \
+    raw_xml_encode, get_namespace_map
+from .converters import ElementData, XMLSchemaConverter
 from .resources import XMLResource
 from . import validators
 
@@ -49,6 +47,7 @@ class DataElement(MutableSequence['DataElement']):
 
     value: Optional[Any] = None
     tail: Optional[str] = None
+    xmlns: Optional[List[Tuple[str, str]]] = None
     xsd_element: Optional['XsdElement'] = None
     xsd_type: Optional[BaseXsdType] = None
     _encoder: Optional['XsdElement'] = None
@@ -57,10 +56,11 @@ class DataElement(MutableSequence['DataElement']):
                  value: Optional[Any] = None,
                  attrib: Optional[Dict[str, Any]] = None,
                  nsmap: Optional[MutableMapping[str, str]] = None,
+                 xmlns: Optional[List[Tuple[str, str]]] = None,
                  xsd_element: Optional['XsdElement'] = None,
                  xsd_type: Optional[BaseXsdType] = None) -> None:
 
-        super(DataElement, self).__init__()
+        super().__init__()
         self._children = []
         self.tag = tag
         self.attrib = {}
@@ -72,6 +72,8 @@ class DataElement(MutableSequence['DataElement']):
             self.attrib.update(attrib)
         if nsmap is not None:
             self.nsmap.update(nsmap)
+        if xmlns is not None:
+            self.xmlns = xmlns
 
         if xsd_element is not None:
             self.xsd_element = xsd_element
@@ -82,10 +84,10 @@ class DataElement(MutableSequence['DataElement']):
             self._encoder = self.xsd_element
 
     @overload
-    def __getitem__(self, i: int) -> 'DataElement': ...
+    def __getitem__(self, i: int) -> 'DataElement': ...  # pragma: no cover
 
     @overload
-    def __getitem__(self, s: slice) -> MutableSequence['DataElement']: ...
+    def __getitem__(self, s: slice) -> MutableSequence['DataElement']: ...  # pragma: no cover
 
     def __getitem__(self, i: Union[int, slice]) \
             -> Union['DataElement', MutableSequence['DataElement']]:
@@ -134,7 +136,7 @@ class DataElement(MutableSequence['DataElement']):
             else:
                 self._encoder = self.xsd_element
 
-        super(DataElement, self).__setattr__(key, value)
+        super().__setattr__(key, value)
 
     @property
     def text(self) -> Optional[str]:
@@ -143,7 +145,25 @@ class DataElement(MutableSequence['DataElement']):
 
     def get(self, key: str, default: Any = None) -> Any:
         """Gets a data element attribute."""
-        return self.attrib.get(key, default)
+        try:
+            return self.attrib[key]
+        except KeyError:
+            if not self.nsmap:
+                return default
+
+            # Try a match with mapped/unmapped name
+            if key.startswith('{'):
+                key = get_prefixed_qname(key, self.nsmap)
+                return self.attrib.get(key, default)
+            elif ':' in key:
+                try:
+                    _prefix, _local_name = key.split(':')
+                    key = f'{{{self.nsmap[_prefix]}}}{_local_name}'
+                except (ValueError, KeyError):
+                    pass
+                else:
+                    return self.attrib.get(key, default)
+            return default
 
     def set(self, key: str, value: Any) -> None:
         """Sets a data element attribute."""
@@ -171,9 +191,60 @@ class DataElement(MutableSequence['DataElement']):
         return get_prefixed_qname(self.tag, self.nsmap)
 
     @property
+    def display_name(self) -> str:
+        """The prefixed name, or the tag if it's associated with the default namespace."""
+        prefixed_name = self.prefixed_name
+        return self.name if ':' not in prefixed_name else prefixed_name
+
+    @property
     def local_name(self) -> str:
         """The local part of the tag."""
         return local_name(self.tag)
+
+    def iter(self, tag: Optional[str] = None) -> Iterator['DataElement']:
+        """
+        Creates an iterator for the data element and its subelements. If tag
+        is not `None` or '*', only data elements whose matches tag are returned
+        from the iterator.
+        """
+        if tag == '*':
+            tag = None
+        if tag is None or tag == self.tag:
+            yield self
+        for child in self._children:
+            yield from child.iter(tag)
+
+    def iterchildren(self, tag: Optional[str] = None) -> Iterator['DataElement']:
+        """
+        Creates an iterator for the child data elements. If *tag* is not `None` or '*',
+        only data elements whose name matches tag are returned from the iterator.
+        """
+        if tag == '*':
+            tag = None
+        for child in self:
+            if tag is None or tag == child.tag:
+                yield child
+
+    def get_namespaces(self, namespaces: Optional[NamespacesType] = None,
+                       root_only: bool = True) -> NamespacesType:
+        """
+        Returns an overall namespace map for DetaElement, resolving prefix redefinitions.
+
+        :param namespaces: builds the namespace map starting over the dictionary provided.
+        :param root_only: if `True` processes only the namespaces declared in the data \
+        element, otherwise precesses also other namespaces declared in its descendants.
+        """
+        namespaces = copy(namespaces) if namespaces is not None else {}
+        if root_only:
+            update_namespaces(namespaces, self.nsmap.items(), root_declarations=True)
+        else:
+            nsmap = None
+            for elem in self.iter():
+                if nsmap is not elem.nsmap:
+                    nsmap = elem.nsmap
+                    update_namespaces(namespaces, nsmap.items(), elem is self)
+
+        return namespaces
 
     def validate(self, use_defaults: bool = True,
                  namespaces: Optional[NamespacesType] = None,
@@ -212,14 +283,13 @@ class DataElement(MutableSequence['DataElement']):
         Accepts the same arguments of :meth:`validate`.
         """
         if self._encoder is None:
-            raise XMLSchemaValueError("{!r} has no schema bindings".format(self))
+            raise XMLSchemaValueError("%r has no schema bindings" % self)
 
         kwargs: Dict[str, Any] = {
+            'namespaces': self.get_namespaces(namespaces, root_only=False),
             'converter': DataElementConverter,
             'use_defaults': use_defaults,
         }
-        if namespaces:
-            kwargs['namespaces'] = namespaces
         if isinstance(max_depth, int) and max_depth >= 0:
             kwargs['max_depth'] = max_depth
 
@@ -243,6 +313,7 @@ class DataElement(MutableSequence['DataElement']):
         :raises: :exc:`XMLSchemaValidationError` if the object is invalid \
         and ``validation='strict'``.
         """
+        kwargs['namespaces'] = self.get_namespaces(kwargs.get('namespaces'), False)
         if 'converter' not in kwargs:
             kwargs['converter'] = DataElementConverter
 
@@ -252,17 +323,54 @@ class DataElement(MutableSequence['DataElement']):
         elif validation == 'skip':
             encoder = validators.XMLSchema.builtin_types()['anyType']
         else:
-            raise XMLSchemaValueError("{!r} has no schema bindings".format(self))
+            raise XMLSchemaValueError("%r has no schema bindings" % self)
 
         return encoder.encode(self, validation=validation, **kwargs)
 
     to_etree = encode
 
-    def tostring(self, indent: str = '', max_lines: Optional[int] = None,
-                 spaces_for_tab: int = 4) -> Any:
-        """Serializes the data element tree to an XML source string."""
-        root, errors = self.encode(validation='lax')
-        return etree_tostring(root, self.nsmap, indent, max_lines, spaces_for_tab)
+    def tostring(self, namespaces: Optional[MutableMapping[str, str]] = None,
+                 indent: str = '', max_lines: Optional[int] = None,
+                 spaces_for_tab: int = 4, xml_declaration: bool = False,
+                 encoding: str = 'unicode', method: str = 'xml') -> str:
+        """
+        Serializes the data element tree to an XML source string.
+
+        :param namespaces: is an optional mapping from namespace prefix to URI. \
+        Provided namespaces are registered before serialization. Ignored if the \
+        provided *elem* argument is a lxml Element instance.
+        :param indent: the baseline indentation.
+        :param max_lines: if truncate serialization after a number of lines \
+        (default: do not truncate).
+        :param spaces_for_tab: number of spaces for replacing tab characters. For \
+        default tabs are replaced with 4 spaces, provide `None` to keep tab characters.
+        :param xml_declaration: if set to `True` inserts the XML declaration at the head.
+        :param encoding: if "unicode" (the default) the output is a string, \
+        otherwise it’s binary.
+        :param method: is either "xml" (the default), "html" or "text".
+        :return: a Unicode string.
+        """
+        root, _ = self.encode(validation='lax')
+        if not hasattr(root, 'nsmap'):
+            namespaces = self.get_namespaces(namespaces, root_only=False)
+
+        _string = etree_tostring(
+            elem=root,
+            namespaces=namespaces,
+            indent=indent,
+            max_lines=max_lines,
+            spaces_for_tab=spaces_for_tab,
+            xml_declaration=xml_declaration,
+            encoding=encoding,
+            method=method
+        )
+        if isinstance(_string, bytes):  # pragma: no cover
+            return _string.decode('utf-8')
+        return _string
+
+    def _get_xpath_context(self) -> XPathContext:
+        xpath_root = build_node_tree(self)
+        return XPathContext(xpath_root)
 
     def find(self, path: str,
              namespaces: Optional[NamespacesType] = None) -> Optional['DataElement']:
@@ -274,7 +382,7 @@ class DataElement(MutableSequence['DataElement']):
         :return: the first matching data element or ``None`` if there is no match.
         """
         parser = XPath2Parser(namespaces, strict=False)
-        context = XPathContext(cast(Any, self))
+        context = self._get_xpath_context()
         result = next(parser.parse(path).select_results(context), None)
         return result if isinstance(result, DataElement) else None
 
@@ -289,11 +397,11 @@ class DataElement(MutableSequence['DataElement']):
         an empty list is returned if there is no match.
         """
         parser = XPath2Parser(namespaces, strict=False)
-        context = XPathContext(cast(Any, self))
+        context = self._get_xpath_context()
         results = parser.parse(path).get_results(context)
-        if not isinstance(results, list):
+        if not isinstance(results, list):  # pragma: no cover
             return []
-        return [e for e in results if isinstance(e, DataElement)]
+        return cast(List[DataElement], [e for e in results if isinstance(e, DataElement)])
 
     def iterfind(self, path: str,
                  namespaces: Optional[NamespacesType] = None) -> Iterator['DataElement']:
@@ -305,33 +413,9 @@ class DataElement(MutableSequence['DataElement']):
         :return: an iterable yielding all matching data elements in document order.
         """
         parser = XPath2Parser(namespaces, strict=False)
-        context = XPathContext(cast(Any, self))
+        context = self._get_xpath_context()
         results = parser.parse(path).select_results(context)
-        yield from filter(lambda x: isinstance(x, DataElement), results)  # type: ignore[misc]
-
-    def iter(self, tag: Optional[str] = None) -> Iterator['DataElement']:
-        """
-        Creates an iterator for the data element and its subelements. If tag
-        is not `None` or '*', only data elements whose matches tag are returned
-        from the iterator.
-        """
-        if tag == '*':
-            tag = None
-        if tag is None or tag == self.tag:
-            yield self
-        for child in self._children:
-            yield from child.iter(tag)
-
-    def iterchildren(self, tag: Optional[str] = None) -> Iterator['DataElement']:
-        """
-        Creates an iterator for the child data elements. If *tag* is not `None` or '*',
-        only data elements whose name matches tag are returned from the iterator.
-        """
-        if tag == '*':
-            tag = None
-        for child in self:
-            if tag is None or tag == child.tag:
-                yield child
+        yield from filter(lambda x: isinstance(x, DataElement), results)
 
 
 class DataBindingMeta(ABCMeta):
@@ -348,13 +432,13 @@ class DataBindingMeta(ABCMeta):
             raise XMLSchemaAttributeError(msg) from None
 
         if not isinstance(xsd_element, validators.XsdElement):
-            raise XMLSchemaTypeError("{!r} is not an XSD element".format(xsd_element))
+            raise XMLSchemaTypeError(f"{xsd_element!r} is not an XSD element")
 
         attrs['__module__'] = None
-        return super(DataBindingMeta, mcs).__new__(mcs, name, bases, attrs)
+        return super().__new__(mcs, name, bases, attrs)
 
     def __init__(cls, name: str, bases: Tuple[Type[Any], ...], attrs: Dict[str, Any]) -> None:
-        super(DataBindingMeta, cls).__init__(name, bases, attrs)
+        super().__init__(name, bases, attrs)
         cls.xsd_version = cls.xsd_element.xsd_version
         cls.namespace = cls.xsd_element.target_namespace
 
@@ -375,18 +459,45 @@ class DataElementConverter(XMLSchemaConverter):
     :param namespaces: a dictionary map from namespace prefixes to URI.
     :param data_element_class: MutableSequence subclass to use for decoded data. \
     Default is `DataElement`.
+    :param map_attribute_names: define if map the names of attributes to prefixed \
+    form. Defaults to `True`. If `False` the names are kept to extended format.
     """
-    __slots__ = 'data_element_class',
+    __slots__ = 'data_element_class', 'map_attribute_names'
 
     def __init__(self, namespaces: Optional[NamespacesType] = None,
                  data_element_class: Optional[Type['DataElement']] = None,
+                 map_attribute_names: bool = True,
                  **kwargs: Any) -> None:
         if data_element_class is None:
             self.data_element_class = DataElement
         else:
             self.data_element_class = data_element_class
+
+        self.map_attribute_names = map_attribute_names
         kwargs.update(attr_prefix='', text_key='', cdata_prefix='')
-        super(DataElementConverter, self).__init__(namespaces, **kwargs)
+        super().__init__(namespaces, **kwargs)
+
+    @property
+    def xmlns_processing_default(self) -> str:
+        return 'stacked'
+
+    def get_xmlns_from_data(self, obj: Any) -> Optional[List[Tuple[str, str]]]:
+        return obj.xmlns if isinstance(obj, DataElement) else None
+
+    def get_namespaces(self, namespaces: Optional[NamespacesType] = None,
+                       root_only: bool = True) -> NamespacesType:
+        if not isinstance(self.source, DataElement) or self._xmlns_getter is None:
+            return super().get_namespaces(namespaces, root_only)
+
+        namespaces = get_namespace_map(namespaces)
+        for obj in self.source.iter():
+            xmlns = self.get_xmlns_from_data(obj)
+            if xmlns:
+                update_namespaces(namespaces, xmlns, obj is self.source)
+            if root_only:
+                break
+
+        return namespaces
 
     @property
     def lossy(self) -> bool:
@@ -396,21 +507,32 @@ class DataElementConverter(XMLSchemaConverter):
     def losslessly(self) -> bool:
         return True
 
-    def copy(self, **kwargs: Any) -> 'DataElementConverter':
-        obj = cast(DataElementConverter, super().copy(**kwargs))
+    def copy(self, keep_namespaces: bool = True, **kwargs: Any) -> 'DataElementConverter':
+        obj = cast(DataElementConverter, super().copy(keep_namespaces, **kwargs))
         obj.data_element_class = kwargs.get('data_element_class', self.data_element_class)
         return obj
 
-    def element_decode(self, data: ElementData, xsd_element: 'XsdElement',
-                       xsd_type: Optional[BaseXsdType] = None, level: int = 0) -> 'DataElement':
-        data_element = self.data_element_class(
+    def get_data_element(self, data: ElementData,
+                         xsd_element: 'XsdElement',
+                         xsd_type: Optional[BaseXsdType] = None,
+                         level: int = 0) -> DataElement:
+        xmlns = self.get_effective_xmlns(data.xmlns, level, xsd_element)
+        return self.data_element_class(
             tag=data.tag,
             value=data.text,
-            nsmap=self.namespaces,
+            nsmap=self._namespaces if self._use_namespaces else None,
+            xmlns=xmlns,
             xsd_element=xsd_element,
             xsd_type=xsd_type
         )
-        data_element.attrib.update((k, v) for k, v in self.map_attributes(data.attributes))
+
+    def element_decode(self, data: ElementData, xsd_element: 'XsdElement',
+                       xsd_type: Optional[BaseXsdType] = None, level: int = 0) -> 'DataElement':
+        data_element = self.get_data_element(data, xsd_element, xsd_type, level)
+        if self.map_attribute_names:
+            data_element.attrib.update(self.map_attributes(data.attributes))
+        elif data.attributes:
+            data_element.attrib.update(data.attributes)
 
         if (xsd_type or xsd_element.type).model_group is not None:
             for name, value, _ in self.map_content(data.content):
@@ -426,8 +548,8 @@ class DataElementConverter(XMLSchemaConverter):
 
     def element_encode(self, data_element: 'DataElement', xsd_element: 'XsdElement',
                        level: int = 0) -> ElementData:
-        self.namespaces.update(data_element.nsmap)
-        if not xsd_element.is_matching(data_element.tag, self._namespaces.get('')):
+        xmlns = self.set_context(data_element, level)
+        if not xsd_element.is_matching(data_element.tag):
             raise XMLSchemaValueError("Unmatched tag")
 
         attributes = {self.unmap_qname(k, xsd_element.attributes): v
@@ -435,7 +557,7 @@ class DataElementConverter(XMLSchemaConverter):
 
         data_len = len(data_element)
         if not data_len:
-            return ElementData(data_element.tag, data_element.value, None, attributes)
+            return ElementData(data_element.tag, data_element.value, None, attributes, xmlns)
 
         content: List[Tuple[Union[str, int], Any]] = []
         cdata_num = count(1)
@@ -447,7 +569,7 @@ class DataElementConverter(XMLSchemaConverter):
             if e.tail is not None:
                 content.append((next(cdata_num), e.tail))
 
-        return ElementData(data_element.tag, None, content, attributes)
+        return ElementData(data_element.tag, None, content, attributes, xmlns)
 
 
 class DataBindingConverter(DataElementConverter):
@@ -459,25 +581,16 @@ class DataBindingConverter(DataElementConverter):
     """
     __slots__ = ()
 
-    def element_decode(self, data: ElementData, xsd_element: 'XsdElement',
-                       xsd_type: Optional[BaseXsdType] = None, level: int = 0) -> 'DataElement':
+    def get_data_element(self, data: ElementData,
+                         xsd_element: 'XsdElement',
+                         xsd_type: Optional[BaseXsdType] = None,
+                         level: int = 0) -> DataElement:
+        xmlns = self.get_effective_xmlns(data.xmlns, level, xsd_element)
         cls = xsd_element.get_binding(self.data_element_class)
-        data_element = cls(
+        return cls(
             tag=data.tag,
             value=data.text,
-            nsmap=self.namespaces,
+            nsmap=self._namespaces if self._use_namespaces else None,
+            xmlns=xmlns,
             xsd_type=xsd_type
         )
-        data_element.attrib.update((k, v) for k, v in self.map_attributes(data.attributes))
-
-        if (xsd_type or xsd_element.type).model_group is not None:
-            for name, value, _ in self.map_content(data.content):
-                if not name.isdigit():
-                    data_element.append(value)
-                else:
-                    try:
-                        data_element[-1].tail = value
-                    except IndexError:
-                        data_element.value = value
-
-        return data_element

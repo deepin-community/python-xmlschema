@@ -84,9 +84,10 @@ def casepath(relative_path):
 
 XSD_TEST = """\
 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
-    xmlns:tns="http://xmlschema.test/ns" 
+    xmlns:tns="http://xmlschema.test/ns"
     targetNamespace="http://xmlschema.test/ns">
 
+  <xs:import /> <!-- for resolving local names in tests -->
   <xs:element name="root" type="xs:string" />
 
   <xs:complexType name="type3">
@@ -112,7 +113,7 @@ XSD_TEST = """\
   <xs:simpleType name="type5">
     <xs:restriction base="xs:decimal" />
   </xs:simpleType>
-  
+
   <xs:simpleType name="type6">
     <xs:restriction base="xs:float" />
   </xs:simpleType>
@@ -126,6 +127,13 @@ class TestAbstractGenerator(unittest.TestCase):
 
     schema_class = XMLSchema10
     generator_class = DemoGenerator
+
+    schema: XMLSchema10
+    searchpath: Path
+    col_dir: str
+    col_xsd_file: str
+    col_xml_file: str
+    col_schema: XMLSchema10
 
     @classmethod
     def setUpClass(cls):
@@ -181,11 +189,11 @@ class TestAbstractGenerator(unittest.TestCase):
 
         self.assertIs(generator.schema, self.schema)
         self.assertIsInstance(generator._env, jinja2.Environment)
-        self.assertEqual(repr(generator), "{}(namespace={!r})".format(class_name, namespace))
+        self.assertEqual(repr(generator), f"{class_name}(namespace={namespace!r})")
 
         generator = self.generator_class(self.col_xsd_file)
         self.assertIsInstance(generator.schema, XMLSchema11)
-        self.assertEqual(repr(generator), "{}(schema='collection.xsd')".format(class_name))
+        self.assertEqual(repr(generator), f"{class_name}(schema='collection.xsd')")
 
     def test_searchpath_argument(self):
         class DemoGenerator2(AbstractGenerator):
@@ -231,8 +239,8 @@ class TestAbstractGenerator(unittest.TestCase):
         template_dir = Path(__file__).parent.joinpath('templates')
         language = self.generator_class.formal_language.lower()
 
-        templates = set(x.name for x in template_dir.glob('{}/*'.format(language)))
-        templates.update(x.name for x in template_dir.glob('filters/*'.format(language)))
+        templates = {x.name for x in template_dir.glob(f'{language}/*')}
+        templates.update(x.name for x in template_dir.glob('filters/*'))
         self.assertSetEqual(set(self.generator.list_templates()), templates)
 
     def test_matching_templates(self):
@@ -500,7 +508,7 @@ class TestAbstractGenerator(unittest.TestCase):
                         <xs:element name="elem2" type="type2" />
                     </xs:sequence>
                 </xs:complexType>
-                
+
                 <xs:complexType name="type2">
                     <xs:sequence>
                         <xs:element name="elem1" type="type1" />
@@ -529,13 +537,21 @@ class TestAbstractGenerator(unittest.TestCase):
         self.assertFalse(self.generator.extension(self.schema.types['type1']))
         self.assertFalse(self.generator.extension(self.schema.types['type1'], 'tns:type1'))
         self.assertFalse(self.generator.restriction(self.schema.types['type1'], 'tns:type1'))
-        self.assertFalse(self.generator.derivation(self.schema.types['type1'], 'type1'))
+        self.assertTrue(self.generator.derivation(self.schema.types['type1'], 'type1'))
         self.assertFalse(self.generator.restriction(self.schema.types['type6'], 'xs:decimal'))
         self.assertFalse(self.generator.restriction(self.schema.types['type6'], None))
         self.assertFalse(self.generator.derivation(self.schema.types['type1'], 'tns0:type1'))
 
         self.assertTrue(self.generator.derivation(self.schema.types['type1'], 'tns:type1'))
         self.assertTrue(self.generator.restriction(self.schema.types['type6'], 'xs:float'))
+
+        self.assertFalse(self.generator.is_derived(
+            self.schema.types['type1'], '{http://xmlschema.test/ns}foo'
+        ))
+        self.assertFalse(self.generator.is_derived(
+            self.schema.types['type1'], '{http://xmlschema.test/ns}bar'
+        ))
+        self.assertFalse(self.generator.is_derived(self.schema.types['type1'], 'bar', 'foo'))
 
     def test_multi_sequence(self):
         self.assertFalse(self.generator.multi_sequence(self.schema.types['type3']))
@@ -572,10 +588,9 @@ class TestPythonGenerator(TestAbstractGenerator):
 
     def test_list_templates(self):
         template_dir = Path(__file__).parent.joinpath('templates')
-        language = self.generator_class.formal_language.lower()
 
         templates = {'sample.py.jinja', 'bindings.py.jinja'}
-        templates.update(x.name for x in template_dir.glob('filters/*'.format(language)))
+        templates.update(x.name for x in template_dir.glob('filters/*'))
         self.assertSetEqual(set(self.generator.list_templates()), templates)
 
     def test_sample_module(self):

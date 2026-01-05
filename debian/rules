@@ -3,34 +3,21 @@
 
 include /usr/share/dpkg/pkg-info.mk
 
-
-# Copy/generate three artifacts needed by the test suite
 export PYBUILD_NAME=xmlschema
-define PYBUILD_BEFORE_TEST
-  cp mypy.ini requirements-dev.txt setup.py {build_dir}/
-  mkdir {build_dir}/doc
-  cp doc/conf.py {build_dir}/doc/
-endef
-export PYBUILD_BEFORE_TEST
-export PYBUILD_AFTER_TEST=rm -f {build_dir}/setup.py {build_dir}/mypy.ini {build_dir}/requirements-dev.txt {build_dir}/doc/conf.py
-
 
 %:
-	dh $@ --with python3,sphinxdoc --buildsystem=pybuild
+	dh $@ --buildsystem=pybuild
 
-override_dh_auto_build: export http_proxy='127.0.0.1:9'
-override_dh_auto_build: export https_proxy='127.0.0.1:9'
-override_dh_auto_build:
-	dh_auto_build
+execute_after_dh_auto_build:
 ifeq (,$(findstring nodoc, $(DEB_BUILD_OPTIONS)))
-	PYTHONPATH=$(CURDIR) $(MAKE) -C doc html
+	PYTHONPATH="$(shell pybuild --print {build_dir} --interpreter python3)" http_proxy="127.0.0.1:9" https_proxy="127.0.0.1:9" \
+	$(MAKE) -C doc html
 endif
 
-override_dh_auto_install:
-	dh_auto_install
+execute_after_dh_auto_install:
 	for CMD in xmlschema-json2xml xmlschema-validate xmlschema-xml2json ; \
 	do \
-		PYTHONPATH=debian/python3-xmlschema/usr/lib/$(shell py3versions -d)/dist-packages/ \
+		PYTHONPATH="debian/python3-xmlschema/$(shell pybuild --print {install_dir} --interpreter python3)" \
 		help2man \
 			--version-string $(DEB_VERSION_UPSTREAM) \
 			--no-info \
@@ -45,10 +32,3 @@ override_dh_auto_install:
 override_dh_installdocs:
 	dh_installdocs --package=python-xmlschema-doc --doc-main-package=python3-xmlschema
 	dh_installdocs --remaining-packages
-
-override_dh_auto_clean:
-	dh_auto_clean
-	rm -rf doc/_build
-	rm -f unicode_categories.json xmlschema/unicode_categories.json
-	rm -f *.1
-

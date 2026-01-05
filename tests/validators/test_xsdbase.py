@@ -13,22 +13,32 @@ import os
 import platform
 import re
 from textwrap import dedent
+from xml.etree import ElementTree
 
 try:
     import lxml.etree as lxml_etree
 except ImportError:
     lxml_etree = None
 
+from xmlschema import DataElement, XMLResource, XMLSchemaConverter, JsonMLConverter
 from xmlschema.validators import XsdValidator, XsdComponent, XMLSchema10, XMLSchema11, \
     XMLSchemaParseError, XMLSchemaValidationError, XsdAnnotation, XsdGroup, XsdSimpleType
+from xmlschema.validators.xsdbase import check_validation_mode
 from xmlschema.names import XSD_NAMESPACE, XSD_ELEMENT, XSD_ANNOTATION, XSD_ANY_TYPE
-from xmlschema.etree import ElementTree
-from xmlschema.dataobjects import DataElement
 
 CASES_DIR = os.path.join(os.path.dirname(__file__), '../test_cases')
 
 
 class TestXsdValidator(unittest.TestCase):
+
+    def test_check_validation_mode(self):
+        self.assertIsNone(check_validation_mode('strict'))
+        self.assertIsNone(check_validation_mode('lax'))
+        self.assertIsNone(check_validation_mode('skip'))
+
+        self.assertRaises(ValueError, check_validation_mode, 'none')
+        self.assertRaises(ValueError, check_validation_mode, ' strict ')
+        self.assertRaises(TypeError, check_validation_mode, None)
 
     def test_initialization(self):
         validator = XsdValidator()
@@ -193,7 +203,7 @@ class TestXsdComponent(unittest.TestCase):
                     <xs:simpleContent>
                         <xs:extension base="xs:string">
                             <xs:attribute ref="slot"/>
-                        </xs:extension> 
+                        </xs:extension>
                     </xs:simpleContent>
                 </xs:complexType>
             </xs:element>
@@ -320,13 +330,13 @@ class TestXsdComponent(unittest.TestCase):
                     <xs:complexContent>
                         <xs:restriction base="type0">
                             <xs:sequence>
-                                <xs:element name="elem1" targetNamespace="http://xmlschema.test/ns" 
+                                <xs:element name="elem1" targetNamespace="http://xmlschema.test/ns"
                                 type="xs:integer"/>
                             </xs:sequence>
                         </xs:restriction>
-                    </xs:complexContent>      
+                    </xs:complexContent>
                 </xs:complexType>
-                <xs:element name="root" type="type1"/>    
+                <xs:element name="root" type="type1"/>
             </xs:schema>""")
         self.assertEqual(schema.elements['root'].type.content[0].target_namespace,
                          'http://xmlschema.test/ns')
@@ -335,12 +345,29 @@ class TestXsdComponent(unittest.TestCase):
                 <xs:element name="root">
                     <xs:complexType>
                         <xs:sequence>
-                            <xs:element name="node" targetNamespace=""/> 
+                            <xs:element name="node" targetNamespace=""/>
                         </xs:sequence>
                     </xs:complexType>
                 </xs:element>
             </xs:schema>""")
         self.assertEqual(schema.elements['root'].type.content[0].name, 'node')
+
+    def test_xmlns_namespace_forbidden(self):
+        source = dedent("""\
+          <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+            <xs:element name="root">
+              <xs:complexType>
+                <xs:sequence>
+                  <xs:element name="node" targetNamespace="http://www.w3.org/2000/xmlns/"/>
+                </xs:sequence>
+              </xs:complexType>
+            </xs:element>
+          </xs:schema>""")
+
+        with self.assertRaises(ValueError) as ctx:
+            XMLSchema11(source)
+
+        self.assertIn('http://www.w3.org/2000/xmlns/', str(ctx.exception))
 
     def test_id_property(self):
         name = '{%s}motorbikes' % self.schema.target_namespace
@@ -503,6 +530,86 @@ class TestXsdComponent(unittest.TestCase):
         self.assertEqual(len(annotation.errors), 0)  # see issue 287
         self.assertIsNone(annotation.annotation)
 
+    def test_attribute_group_annotation__issue_366(self):
+        schema = XMLSchema10(dedent("""\
+        <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+            <xs:attributeGroup name="attrGroup">
+              <xs:annotation>
+                 <xs:documentation>
+                 A global attribute group
+                 </xs:documentation>
+              </xs:annotation>
+              <xs:attribute name="attr1"/>
+              <xs:attribute name="attr2"/>
+            </xs:attributeGroup>
+
+            <xs:complexType name="rootType" mixed="true">
+              <xs:annotation>
+                <xs:documentation>
+                A global complex type
+                </xs:documentation>
+              </xs:annotation>
+              <xs:sequence>
+                <xs:any minOccurs="0" maxOccurs="unbounded" processContents="lax"/>
+              </xs:sequence>
+              <xs:attributeGroup ref="attrGroup"/>
+            </xs:complexType>
+
+            <xs:element name="root" type="rootType">
+              <xs:annotation>
+                <xs:documentation>
+                The root element
+                </xs:documentation>
+              </xs:annotation>
+            </xs:element>
+        </xs:schema>"""))
+
+        attribute_group = schema.attribute_groups['attrGroup']
+        self.assertIn('A global attribute group', str(attribute_group.annotation))
+
+        xsd_type = schema.types['rootType']
+        self.assertIn('A global complex type', str(xsd_type.annotation))
+        self.assertIsNone(xsd_type.attributes.annotation)
+
+        xsd_element = schema.elements['root']
+        self.assertIn('The root element', str(xsd_element.annotation))
+        self.assertIsNone(xsd_element.attributes.annotation)
+
+    def test_get_converter(self):
+        schema = XMLSchema10(dedent("""\
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                <xs:element name="root"/>
+            </xs:schema>"""))
+
+        resource = XMLResource('<root xmlns:tns="http://example.test/ns1"/>')
+        namespaces = {'tns': 'http://example.test/ns0'}
+        obj = {'root': {'@xmlns:tns="http://example.test/ns1'}}
+
+        kwargs = {'preserve_root': True, 'namespaces': namespaces}
+        converter = schema.elements['root']._get_converter(resource, kwargs)
+        self.assertIsInstance(converter, XMLSchemaConverter)
+        self.assertDictEqual(
+            kwargs['namespaces'],
+            {'tns': 'http://example.test/ns0', 'tns0': 'http://example.test/ns1'}
+        )
+        self.assertIs(converter, kwargs['converter'])
+        self.assertIs(converter.namespaces, kwargs['namespaces'])
+        self.assertTrue(converter.preserve_root)
+        self.assertIs(resource, kwargs['source'])
+
+        kwargs = {'converter': JsonMLConverter}
+        converter = schema.elements['root']._get_converter(resource.root, kwargs)
+        self.assertIsInstance(converter, JsonMLConverter)
+        self.assertIsNot(resource, kwargs['source'])
+
+        kwargs = {'preserve_root': True}
+        converter = schema.elements['root']._get_converter(obj, kwargs)
+        self.assertIs(converter.source, obj)
+
+        kwargs = {'preserve_root': True, 'source': obj}
+        converter = schema.elements['root']._get_converter(resource, kwargs)
+        self.assertIs(converter.source, obj)
+
 
 class TestXsdType(unittest.TestCase):
 
@@ -510,7 +617,7 @@ class TestXsdType(unittest.TestCase):
     def setUpClass(cls):
         cls.schema = XMLSchema10(dedent("""\
             <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
-            
+
                  <xs:simpleType name="emptyType">
                      <xs:restriction base="xs:string">
                          <xs:length value="0"/>
@@ -519,7 +626,7 @@ class TestXsdType(unittest.TestCase):
 
                  <xs:complexType name="emptyType2">
                      <xs:attribute name="foo" type="xs:string"/>
-                 </xs:complexType>        
+                 </xs:complexType>
 
                  <xs:simpleType name="idType">
                      <xs:restriction base="xs:ID"/>
@@ -532,7 +639,7 @@ class TestXsdType(unittest.TestCase):
                  <xs:simpleType name="dateTimeType">
                      <xs:restriction base="xs:dateTime"/>
                  </xs:simpleType>
-                 
+
                  <xs:simpleType name="fooType">
                      <xs:restriction base="xs:string"/>
                  </xs:simpleType>
@@ -544,12 +651,12 @@ class TestXsdType(unittest.TestCase):
                  <xs:simpleType name="fooUnionType">
                      <xs:union memberTypes="xs:string xs:anyURI"/>
                  </xs:simpleType>
-                 
+
                  <xs:complexType name="barType">
                      <xs:sequence>
                          <xs:element name="node"/>
                      </xs:sequence>
-                 </xs:complexType>        
+                 </xs:complexType>
 
                  <xs:complexType name="barExtType">
                      <xs:complexContent>
@@ -559,7 +666,7 @@ class TestXsdType(unittest.TestCase):
                              </xs:sequence>
                          </xs:extension>
                      </xs:complexContent>
-                 </xs:complexType>        
+                 </xs:complexType>
 
                  <xs:complexType name="barResType">
                      <xs:complexContent>
@@ -569,17 +676,17 @@ class TestXsdType(unittest.TestCase):
                              </xs:sequence>
                          </xs:restriction>
                      </xs:complexContent>
-                 </xs:complexType>        
+                 </xs:complexType>
 
                  <xs:complexType name="mixedType" mixed="true">
                      <xs:sequence>
                          <xs:element name="node" type="xs:string"/>
                      </xs:sequence>
-                 </xs:complexType>        
+                 </xs:complexType>
 
                  <xs:element name="fooElem" type="fooType"/>
                  <xs:element name="barElem" type="barType" block="extension"/>
-                     
+
             </xs:schema>"""))
 
     def test_content_type_label(self):

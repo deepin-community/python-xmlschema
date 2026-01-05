@@ -65,23 +65,6 @@ class TestXsdAttributes(XsdValidatorTestCase):
         self.assertEqual(ctx.exception.message,
                          "attribute use='': value doesn't match any pattern of ['\\\\c+']")
 
-    def test_is_empty_attribute(self):
-        schema = self.check_schema("""
-            <xs:attribute name="a1" type="xs:string"/>
-            <xs:attribute name="a2" type="xs:string" fixed=""/>
-            <xs:attribute name="a3" type="emptyString"/>
-            
-            <xs:simpleType name="emptyString">
-              <xs:restriction base="xs:string">
-                <xs:maxLength value="0"/>
-              </xs:restriction>
-            </xs:simpleType>
-        """)
-
-        self.assertFalse(schema.attributes['a1'].is_empty())
-        self.assertTrue(schema.attributes['a2'].is_empty())
-        self.assertTrue(schema.attributes['a3'].is_empty())
-
     def test_wrong_attribute_type(self):
         self.check_schema("""
         <xs:attributeGroup name="alpha">
@@ -177,7 +160,7 @@ class TestXsdAttributes(XsdValidatorTestCase):
 
         with self.assertRaises(XMLSchemaParseError) as ctx:
             self.schema_class("""<xs:schema
-                    xmlns:xs="http://www.w3.org/2001/XMLSchema" 
+                    xmlns:xs="http://www.w3.org/2001/XMLSchema"
                     targetNamespace="http://www.w3.org/2001/XMLSchema-instance" >
                 <xs:attribute name="phone" type="xs:string"/>
             </xs:schema>""")
@@ -314,7 +297,7 @@ class TestXsdAttributes(XsdValidatorTestCase):
 
         with self.assertRaises(ValueError) as ec:
             attribute_group['a3'] = attribute_group['a2']
-        self.assertEqual("'a2' name and key 'a3' mismatch", str(ec.exception))
+        self.assertIn("mismatch", str(ec.exception))
 
         xsd_attribute = attribute_group['a2']
         del attribute_group['a2']
@@ -542,7 +525,7 @@ class TestXsd11Attributes(TestXsdAttributes):
 
         xs = self.get_schema(dedent("""\
             <xs:attributeGroup name="attrs">
-                <xs:attribute name="a" type="xs:string" 
+                <xs:attribute name="a" type="xs:string"
                     targetNamespace="http://xmlschema.test/ns"/>
                 <xs:attribute ref="b"/>
             </xs:attributeGroup>
@@ -559,7 +542,7 @@ class TestXsd11Attributes(TestXsdAttributes):
         with self.assertRaises(XMLSchemaParseError) as ec:
             self.get_schema(dedent("""\
                 <xs:attributeGroup name="attrs">
-                    <xs:attribute name="a" type="xs:string" 
+                    <xs:attribute name="a" type="xs:string"
                         use="prohibited" fixed="foo"/>
                 </xs:attributeGroup>"""))
 

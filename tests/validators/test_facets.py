@@ -20,11 +20,14 @@ from xmlschema.names import XSD_NAMESPACE, XSD_LENGTH, XSD_MIN_LENGTH, XSD_MAX_L
     XSD_WHITE_SPACE, XSD_MIN_INCLUSIVE, XSD_MIN_EXCLUSIVE, XSD_MAX_INCLUSIVE, \
     XSD_MAX_EXCLUSIVE, XSD_TOTAL_DIGITS, XSD_FRACTION_DIGITS, XSD_ENUMERATION, \
     XSD_PATTERN, XSD_ASSERTION
+from xmlschema.validators import XsdEnumerationFacets, XsdPatternFacets, XsdAssertionFacet
 
 
 class TestXsdFacets(unittest.TestCase):
 
     schema_class = XMLSchema10
+    st_xsd_file: pathlib.Path
+    st_schema: XMLSchema10
 
     @classmethod
     def setUpClass(cls):
@@ -237,7 +240,7 @@ class TestXsdFacets(unittest.TestCase):
                     <xs:restriction base="string20">
                         <xs:minLength value="30"/>
                     </xs:restriction>
-                </xs:simpleType>                
+                </xs:simpleType>
             </xs:schema>"""))
 
         self.assertEqual(schema.types['string20'].get_facet(XSD_MIN_LENGTH).value, 20)
@@ -255,7 +258,7 @@ class TestXsdFacets(unittest.TestCase):
                         <xs:restriction base="string40">
                             <xs:minLength value="30"/>
                         </xs:restriction>
-                    </xs:simpleType>                
+                    </xs:simpleType>
                 </xs:schema>"""))
 
     def test_max_length_facet(self):
@@ -298,7 +301,7 @@ class TestXsdFacets(unittest.TestCase):
                     <xs:restriction base="string30">
                         <xs:maxLength value="20"/>
                     </xs:restriction>
-                </xs:simpleType>                
+                </xs:simpleType>
             </xs:schema>"""))
 
         self.assertEqual(schema.types['string30'].get_facet(XSD_MAX_LENGTH).value, 30)
@@ -316,7 +319,7 @@ class TestXsdFacets(unittest.TestCase):
                         <xs:restriction base="string30">
                             <xs:maxLength value="40"/>
                         </xs:restriction>
-                    </xs:simpleType>                
+                    </xs:simpleType>
                 </xs:schema>"""))
 
     def test_min_inclusive_facet(self):
@@ -363,10 +366,10 @@ class TestXsdFacets(unittest.TestCase):
                         <xs:restriction base="type1">
                             <xs:minInclusive value="0"/>
                         </xs:restriction>
-                    </xs:simpleType>                    
+                    </xs:simpleType>
                 </xs:schema>"""))
 
-            facet = schema.types['type1'].get_facet('{%s}%s' % (XSD_NAMESPACE, base_facet))
+            facet = schema.types['type1'].get_facet(f'{{{XSD_NAMESPACE}}}{base_facet}')
             self.assertIsNone(facet(0))
             facet2 = schema.types['type2'].get_facet(XSD_MIN_INCLUSIVE)
             self.assertIsNone(facet2(0))
@@ -385,7 +388,7 @@ class TestXsdFacets(unittest.TestCase):
                             <xs:restriction base="type1">
                                 <xs:minInclusive value="0"/>
                             </xs:restriction>
-                        </xs:simpleType>                    
+                        </xs:simpleType>
                     </xs:schema>"""))
 
         for base_facet in ['maxInclusive', 'maxExclusive']:
@@ -401,7 +404,7 @@ class TestXsdFacets(unittest.TestCase):
                             <xs:restriction base="type1">
                                 <xs:minInclusive value="0"/>
                             </xs:restriction>
-                        </xs:simpleType>                    
+                        </xs:simpleType>
                     </xs:schema>"""))
 
         for base_facet in ['minExclusive', 'maxExclusive']:
@@ -417,7 +420,7 @@ class TestXsdFacets(unittest.TestCase):
                             <xs:restriction base="type1">
                                 <xs:minInclusive value="0"/>
                             </xs:restriction>
-                        </xs:simpleType>                    
+                        </xs:simpleType>
                     </xs:schema>"""))
 
     def test_min_exclusive_facet(self):
@@ -463,10 +466,10 @@ class TestXsdFacets(unittest.TestCase):
                         <xs:restriction base="type1">
                             <xs:minExclusive value="0"/>
                         </xs:restriction>
-                    </xs:simpleType>                    
+                    </xs:simpleType>
                 </xs:schema>"""))
 
-            facet = schema.types['type1'].get_facet('{%s}%s' % (XSD_NAMESPACE, base_facet))
+            facet = schema.types['type1'].get_facet(f'{{{XSD_NAMESPACE}}}{base_facet}')
             self.assertIsNone(facet(1))
             facet2 = schema.types['type2'].get_facet(XSD_MIN_EXCLUSIVE)
             self.assertIsNone(facet2(1))
@@ -485,7 +488,7 @@ class TestXsdFacets(unittest.TestCase):
                             <xs:restriction base="type1">
                                 <xs:minExclusive value="0"/>
                             </xs:restriction>
-                        </xs:simpleType>                    
+                        </xs:simpleType>
                     </xs:schema>"""))
 
         for base_facet in ['minInclusive', 'minExclusive']:
@@ -501,7 +504,7 @@ class TestXsdFacets(unittest.TestCase):
                             <xs:restriction base="type1">
                                 <xs:minExclusive value="0"/>
                             </xs:restriction>
-                        </xs:simpleType>                    
+                        </xs:simpleType>
                     </xs:schema>"""))
 
         for base_facet in ['maxInclusive', 'maxExclusive']:
@@ -517,7 +520,7 @@ class TestXsdFacets(unittest.TestCase):
                             <xs:restriction base="type1">
                                 <xs:minExclusive value="0"/>
                             </xs:restriction>
-                        </xs:simpleType>                    
+                        </xs:simpleType>
                     </xs:schema>"""))
 
     def test_max_inclusive_facet(self):
@@ -536,7 +539,7 @@ class TestXsdFacets(unittest.TestCase):
 
         with self.assertRaises(XMLSchemaValidationError) as ec:
             facet(1)
-        self.assertIn('value has to be lesser or equal than 0', str(ec.exception))
+        self.assertIn('value has to be less than or equal than 0', str(ec.exception))
 
         with self.assertRaises(XMLSchemaValidationError):
             facet('')
@@ -564,10 +567,10 @@ class TestXsdFacets(unittest.TestCase):
                         <xs:restriction base="type1">
                             <xs:maxInclusive value="0"/>
                         </xs:restriction>
-                    </xs:simpleType>                    
+                    </xs:simpleType>
                 </xs:schema>"""))
 
-            facet = schema.types['type1'].get_facet('{%s}%s' % (XSD_NAMESPACE, base_facet))
+            facet = schema.types['type1'].get_facet(f'{{{XSD_NAMESPACE}}}{base_facet}')
             self.assertIsNone(facet(0))
             facet2 = schema.types['type2'].get_facet(XSD_MAX_INCLUSIVE)
             self.assertIsNone(facet2(0))
@@ -586,7 +589,7 @@ class TestXsdFacets(unittest.TestCase):
                             <xs:restriction base="type1">
                                 <xs:maxInclusive value="0"/>
                             </xs:restriction>
-                        </xs:simpleType>                    
+                        </xs:simpleType>
                     </xs:schema>"""))
 
         for base_facet in ['minInclusive', 'minExclusive']:
@@ -602,7 +605,7 @@ class TestXsdFacets(unittest.TestCase):
                             <xs:restriction base="type1">
                                 <xs:maxInclusive value="0"/>
                             </xs:restriction>
-                        </xs:simpleType>                    
+                        </xs:simpleType>
                     </xs:schema>"""))
 
         for base_facet in ['minExclusive', 'maxExclusive']:
@@ -618,7 +621,7 @@ class TestXsdFacets(unittest.TestCase):
                             <xs:restriction base="type1">
                                 <xs:maxInclusive value="0"/>
                             </xs:restriction>
-                        </xs:simpleType>                    
+                        </xs:simpleType>
                     </xs:schema>"""))
 
     def test_max_exclusive_facet(self):
@@ -664,10 +667,10 @@ class TestXsdFacets(unittest.TestCase):
                         <xs:restriction base="type1">
                             <xs:maxExclusive value="0"/>
                         </xs:restriction>
-                    </xs:simpleType>                    
+                    </xs:simpleType>
                 </xs:schema>"""))
 
-            facet = schema.types['type1'].get_facet('{%s}%s' % (XSD_NAMESPACE, base_facet))
+            facet = schema.types['type1'].get_facet(f'{{{XSD_NAMESPACE}}}{base_facet}')
             self.assertIsNone(facet(-1))
             facet2 = schema.types['type2'].get_facet(XSD_MAX_EXCLUSIVE)
             self.assertIsNone(facet2(-1))
@@ -686,7 +689,7 @@ class TestXsdFacets(unittest.TestCase):
                             <xs:restriction base="type1">
                                 <xs:maxExclusive value="0"/>
                             </xs:restriction>
-                        </xs:simpleType>                    
+                        </xs:simpleType>
                     </xs:schema>"""))
 
         for base_facet in ['maxInclusive', 'maxExclusive']:
@@ -702,7 +705,7 @@ class TestXsdFacets(unittest.TestCase):
                             <xs:restriction base="type1">
                                 <xs:maxExclusive value="0"/>
                             </xs:restriction>
-                        </xs:simpleType>                    
+                        </xs:simpleType>
                     </xs:schema>"""))
 
         for base_facet in ['minInclusive', 'minExclusive']:
@@ -718,7 +721,7 @@ class TestXsdFacets(unittest.TestCase):
                             <xs:restriction base="type1">
                                 <xs:maxExclusive value="0"/>
                             </xs:restriction>
-                        </xs:simpleType>                    
+                        </xs:simpleType>
                     </xs:schema>"""))
 
     def test_total_digits_facet(self):
@@ -823,7 +826,7 @@ class TestXsdFacets(unittest.TestCase):
                     </xs:simpleType>
                 </xs:schema>"""))
 
-        self.assertIn("value has to be 0 for types derived from xs:integer", str(ec.exception))
+        self.assertIn("value must be 0 for types derived from xs:integer", str(ec.exception))
 
         with self.assertRaises(XMLSchemaParseError) as ec:
             self.schema_class(dedent("""\
@@ -902,6 +905,8 @@ class TestXsdFacets(unittest.TestCase):
         self.assertFalse(schema.types['enum2'].is_valid('four'))
 
         facet = schema.types['enum2'].get_facet(XSD_ENUMERATION)
+        self.assertIsInstance(facet, XsdEnumerationFacets)
+
         elem = ElementTree.Element(XSD_ENUMERATION, value='three')
         facet.append(elem)
         self.assertTrue(schema.types['enum2'].is_valid('three'))
@@ -1029,6 +1034,7 @@ class TestXsdFacets(unittest.TestCase):
             </xs:schema>"""))
 
         facet = schema.types['pattern1'].get_facet(XSD_PATTERN)
+        self.assertIsInstance(facet, XsdPatternFacets)
         self.assertIsNone(facet('abc'))
         self.assertRaises(XMLSchemaValidationError, facet, '')
         self.assertRaises(XMLSchemaValidationError, facet, 'a;')
@@ -1060,7 +1066,7 @@ class TestXsdFacets(unittest.TestCase):
                         <xs:restriction base="xs:string">
                             <xs:pattern value="]"/>
                         </xs:restriction>
-                    </xs:simpleType>                    
+                    </xs:simpleType>
                 </xs:schema>"""), validation='lax')
 
         self.assertEqual(len(schema.all_errors), 2)
@@ -1088,6 +1094,7 @@ class TestXsdFacets(unittest.TestCase):
             </xs:schema>"""))
 
         facet = schema.types['enum1'].get_facet(XSD_ENUMERATION)
+        self.assertIsInstance(facet, XsdEnumerationFacets)
         self.assertEqual(facet.annotation.documentation[0].text, '1st facet')
         self.assertEqual(facet.get_annotation(0).documentation[0].text, '1st facet')
         self.assertIsNone(facet.get_annotation(1))
@@ -1111,6 +1118,7 @@ class TestXsdFacets(unittest.TestCase):
             </xs:schema>"""))
 
         facet = schema.types['pattern1'].get_facet(XSD_PATTERN)
+        self.assertIsInstance(facet, XsdPatternFacets)
         self.assertIsNone(facet.get_annotation(0))
         self.assertEqual(facet.get_annotation(1).documentation[0].text, '2nd facet')
 
@@ -1130,10 +1138,46 @@ class TestXsdFacets(unittest.TestCase):
                         <xs:restriction base="string30">
                             <xs:maxLength value="20"/>
                         </xs:restriction>
-                    </xs:simpleType>                
+                    </xs:simpleType>
                 </xs:schema>"""))
 
         self.assertIn("'maxLength' facet value is fixed to 30", str(ec.exception))
+
+    def test_restriction_on_list__issue_396(self):
+        schema = self.schema_class(dedent("""\
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+              <xs:element name="list_of_strings">
+                <xs:simpleType>
+                  <xs:restriction>
+                    <xs:simpleType>
+                      <xs:list>
+                        <xs:simpleType>
+                          <xs:restriction base="xs:string">
+                            <xs:minLength value="5"/>
+                            <xs:maxLength value="6"/>
+                          </xs:restriction>
+                        </xs:simpleType>
+                      </xs:list>
+                    </xs:simpleType>
+                    <xs:minLength value="1"/>
+                    <xs:maxLength value="6"/>
+                  </xs:restriction>
+                </xs:simpleType>
+              </xs:element>
+            </xs:schema>"""))
+
+        self.assertTrue(schema.is_valid('<list_of_strings>abcde</list_of_strings>'))
+        self.assertTrue(schema.is_valid('<list_of_strings>abcdef</list_of_strings>'))
+        self.assertFalse(schema.is_valid('<list_of_strings>abcd</list_of_strings>'))
+        self.assertFalse(schema.is_valid('<list_of_strings>abcdefg</list_of_strings>'))
+        self.assertFalse(schema.is_valid('<list_of_strings>     </list_of_strings>'))
+
+        self.assertTrue(schema.is_valid('<list_of_strings>abcde abcde abcde '
+                                        'abcde abcde abcde</list_of_strings>'))
+        self.assertFalse(schema.is_valid('<list_of_strings>abcde abcde abcde '
+                                         'abcde abcd abcde</list_of_strings>'))
+        self.assertFalse(schema.is_valid('<list_of_strings>abcde abcde abcde '
+                                         'abcde abcde abcde abcde</list_of_strings>'))
 
 
 class TestXsd11Identities(TestXsdFacets):
@@ -1242,7 +1286,7 @@ class TestXsd11Identities(TestXsdFacets):
                 </xs:simpleType>
                 <xs:simpleType name="string2">
                     <xs:restriction base="xs:string">
-                        <xs:assertion test="last()" 
+                        <xs:assertion test="last()"
                                       xpathDefaultNamespace="http://xpath.test/ns"/>
                     </xs:restriction>
                 </xs:simpleType>
@@ -1251,7 +1295,6 @@ class TestXsd11Identities(TestXsdFacets):
                         <xs:assertion test="position()"/>
                     </xs:restriction>
                 </xs:simpleType>
-                
                 <xs:simpleType name="integer_list">
                     <xs:list itemType="xs:integer"/>
                 </xs:simpleType>
@@ -1263,10 +1306,12 @@ class TestXsd11Identities(TestXsdFacets):
             </xs:schema>"""))
 
         facet = schema.types['string1'].get_facet(XSD_ASSERTION)
+        self.assertIsInstance(facet, XsdAssertionFacet)
         self.assertIsNone(facet(''))
         self.assertEqual(facet.xpath_default_namespace, '')
 
         facet = schema.types['string2'].get_facet(XSD_ASSERTION)
+        self.assertIsInstance(facet, XsdAssertionFacet)
         self.assertEqual(facet.xpath_default_namespace, 'http://xpath.test/ns')
         with self.assertRaises(XMLSchemaValidationError) as ec:
             facet('')
@@ -1278,6 +1323,7 @@ class TestXsd11Identities(TestXsdFacets):
 
         facet = schema.types['integer_vector'].get_facet(XSD_ASSERTION)
         self.assertIsNone(facet([1, 2, 3]))
+        self.assertIsInstance(facet, XsdAssertionFacet)
         self.assertEqual(facet.parser.variable_types, {'value': 'xs:anySimpleType'})
 
         schema = self.schema_class(dedent("""\
@@ -1297,6 +1343,32 @@ class TestXsd11Identities(TestXsdFacets):
         self.assertEqual(len(schema.all_errors), 2)
         self.assertIn("missing attribute 'test'", str(schema.all_errors[0]))
         self.assertIn("[err:XPST0003] unexpected '?' symbol", str(schema.all_errors[1]))
+
+    def test_use_xpath3(self):
+        schema = self.schema_class(dedent("""\
+            <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                <xs:element name="root" type="rootType"/>
+                <xs:simpleType name="rootType">
+                    <xs:restriction base="xs:string">
+                        <xs:assertion test="let $foo := 'bar' return $foo"/>
+                    </xs:restriction>
+                </xs:simpleType>
+            </xs:schema>"""), use_xpath3=True)
+
+        self.assertTrue(schema.use_xpath3)
+
+        with self.assertRaises(XMLSchemaParseError) as ctx:
+            self.schema_class(dedent("""\
+                <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema">
+                    <xs:element name="root" type="rootType"/>
+                    <xs:simpleType name="rootType">
+                        <xs:restriction base="xs:string">
+                            <xs:assertion test="let $foo := 'bar' return $foo"/>
+                        </xs:restriction>
+                    </xs:simpleType>
+                </xs:schema>"""))
+
+        self.assertIn('XPST0003', str(ctx.exception))
 
 
 if __name__ == '__main__':

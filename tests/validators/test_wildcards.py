@@ -167,7 +167,7 @@ class TestXsd11Wildcards(TestXsdWildcards):
     schema_class = XMLSchema11
 
     def test_parsing(self):
-        super(TestXsd11Wildcards, self).test_parsing()
+        super().test_parsing()
         schema = self.schema_class("""
         <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="tns1">
             <xs:group name="group1">
@@ -382,8 +382,8 @@ class TestXsd11Wildcards(TestXsdWildcards):
           </xs:complexType>
         </xs:element>""")
         self.assertEqual(schema.elements['Book'].type.open_content.mode, 'interleave')
-        self.assertEqual(schema.elements['Book'].type.open_content.any_element.min_occurs, 0)
-        self.assertIsNone(schema.elements['Book'].type.open_content.any_element.max_occurs)
+        self.assertEqual(schema.elements['Book'].type.open_content.any_element.min_occurs, 1)
+        self.assertEqual(schema.elements['Book'].type.open_content.any_element.max_occurs, 1)
 
         schema = self.check_schema("""
         <xs:complexType name="name">
@@ -421,8 +421,8 @@ class TestXsd11Wildcards(TestXsdWildcards):
           </xs:sequence>
         </xs:complexType>""")
         self.assertEqual(schema.types['name'].open_content.mode, 'suffix')
-        self.assertEqual(schema.types['name'].open_content.any_element.min_occurs, 0)
-        self.assertIsNone(schema.types['name'].open_content.any_element.max_occurs)
+        self.assertEqual(schema.types['name'].open_content.any_element.min_occurs, 1)
+        self.assertEqual(schema.types['name'].open_content.any_element.max_occurs, 1)
 
         self.check_schema("""
         <xs:complexType name="name">
@@ -730,7 +730,7 @@ class TestXsd11Wildcards(TestXsdWildcards):
         </xs:schema>""", XMLSchemaParseError)
 
     def test_any_wildcard(self):
-        super(TestXsd11Wildcards, self).test_any_wildcard()
+        super().test_any_wildcard()
         self.check_schema("""
         <xs:complexType name="taggedType">
           <xs:sequence>
@@ -767,7 +767,7 @@ class TestXsd11Wildcards(TestXsdWildcards):
             <xs:complexType name="taggedType">
               <xs:sequence>
                 <xs:element name="tag" type="xs:string"/>
-                <xs:any namespace="##targetNamespace" 
+                <xs:any namespace="##targetNamespace"
                 notQName="##defined tns1:foo ##definedSibling"/>
               </xs:sequence>
             </xs:complexType>
@@ -776,7 +776,7 @@ class TestXsd11Wildcards(TestXsdWildcards):
                          ['##defined', '{tns1}foo', '##definedSibling'])
 
     def test_any_attribute_wildcard(self):
-        super(TestXsd11Wildcards, self).test_any_attribute_wildcard()
+        super().test_any_attribute_wildcard()
         schema = self.schema_class("""
         <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
                 xmlns:tns1="tns1" targetNamespace="tns1">

@@ -2,8 +2,200 @@
 CHANGELOG
 *********
 
-`v1.10.0`_ (2022-03-07)
+`v3.4.5`_ (2025-03-22)
 ======================
+* Fix xs:all groups occurs check (issue #437)
+
+`v3.4.4`_ (2025-03-18)
+======================
+* Migrate project metadata to pyproject.toml (PR #436)
+* Fix static typing errors with mypy==1.15.0 and elementpath==4.8.0
+
+`v3.4.3`_ (2024-10-31)
+======================
+* Fix incorrect validation error for substitution group with abstract head (issue #417)
+* Refactor XSD identities processing using also typed XPath 2.0+ for getting values (issue #418)
+* Clean tag retrieval during encode for some converter types (Abdera, BadgerFish and GData)
+
+`v3.4.2`_ (2024-09-17)
+======================
+* Fix other failing URL normalization tests
+* Avoid the use of sys.version_info for checking results, better to extend the check to more values.
+
+`v3.4.1`_ (2024-09-12)
+======================
+* Fix failing URL normalization tests (issue #416)
+* Disable protocols checking with elementpath v4.5.0
+
+`v3.4.0`_ (2024-09-10)
+======================
+* Extended ModelVisitor to make it usable as an helper class for generating content
+  (issues #405 and #408)
+
+`v3.3.2`_ (2024-07-29)
+======================
+* Fix UNC path tests (issues #405 and #408)
+
+`v3.3.1`_ (2024-04-27)
+======================
+* Update validation errors with logging stacktrace in debug mode
+* Improve locations parsing and URL encoding
+
+`v3.3.0`_ (2024-04-17)
+======================
+* Rewrite the validation of openContent using InterleavedModelVisitor and SuffixedModelVisitor
+* Fix validation of XSD 1.1 'all' nested models
+
+`v3.2.1`_ (2024-04-07)
+======================
+* Improve ModelVisitor and particle occurs checking
+* Fix interleave mode with XSD 1.1 open content (issue #397)
+* Fix for export/download of XSD sources with commented-out imports/include (issue #387)
+
+`v3.2.0`_ (2024-03-25)
+======================
+* Add *download_schemas()* to package API (#387)
+* Fix issue with facets on list types (#396)
+
+`v3.1.0`_ (2024-03-13)
+======================
+* Add GData converter (issue #388/PR #391)
+* Fix typing protocols usage
+* Extend XSD annotations parsing (issue #366)
+
+`v3.0.2`_ (2024-02-18)
+======================
+* Use XPath subtree as fragment for xs:assert (issue #386)
+* Fix in XMLSchemaProxy definition and usage for providing
+  a base-uri to schema nodes (issue #379)
+* Module xpath.py splitted to a subpackage for including all the
+  custom XPath 1.0/2.0 parsers and related classes to XPath
+* Add support for Python 3.13 (pre-releases)
+
+`v3.0.1`_ (2024-01-09)
+======================
+* Hotfix release for broken requirement
+* Set python-requires metadata to >=3.8 (pull request #382)
+* Upgrade GitHub Actions (pull request #381)
+
+`v3.0.0`_ (2024-01-07)
+======================
+* XML declaration processing option *xmlns_processing* for converters
+* Decode/validate from XML document with dynamic schema load
+* XMLResource enhancement for a better XML resources processing
+* Improve lazy resources iteration removing preceding elements (*thin_mode* option)
+* Drop support for Python 3.7
+
+`v2.5.1`_ (2023-12-19)
+======================
+* Fix slowness of key selectors introduced by v2.5.0 (issue #378)
+* Remove redundant wheel dep from pyproject.toml and unnecessary build deps from tox.ini (PR #368)
+
+`v2.5.0`_ (2023-09-21)
+======================
+* Fix identity keys tracking with additional full XPath checks on XML data
+* Rewrite schema exports using relative paths
+
+`v2.4.0`_ (2023-07-27)
+======================
+* Improve schema export using XSD source encoding
+* Add XML signature and encryption to local fallback schemas (issue #357)
+
+`v2.3.1`_ (2023-06-14)
+======================
+* Meta-schema elements and groups ignore xsi:type attributes (issue #350)
+* Use the meta-schemas only for validating XSD sources otherwise create dummy schemas
+
+`v2.3.0`_ (2023-05-18)
+======================
+* Improve sequence/all restriction checks for XSD 1.1
+* Add *schema* argument to `Wsdl11Document`
+
+`v2.2.3`_ (2023-04-14)
+======================
+* Add support for Python 3.12
+* Detach content iteration methods from ModelVisitor
+
+`v2.2.2`_ (2023-03-05)
+======================
+* Fix mixed content extension with empty content (issue #337)
+* Fix lru_cache() usage on global maps caching
+
+`v2.2.1`_ (2023-02-11)
+======================
+* Fix mixed content extension without explicit mixed attribute (issue #334)
+
+`v2.2.0`_ (2023-02-06)
+======================
+* Refine string serialization of XML resources and data elements
+* Switch to use elementpath v4
+* Fix sequence_type property for XSD types
+* Remove *XsdElement.get_attribute()*: unused and doesn't work as expected
+
+`v2.1.1`_ (2022-10-01)
+======================
+* Fix *schema_path* usage in `XMLSchemaBase.iter_errors()`
+* Add *allow_empty* option to `XMLSchemaBase` validation API
+
+`v2.1.0`_ (2022-09-25)
+======================
+* Add *to_etree()* to document API
+* Improve generic encoding with wildcards
+* Clean document API and schema decoding
+
+`v2.0.4`_ (2022-09-08)
+======================
+* Add *use_location_hints* argument to document API for giving the option
+  of ignoring XSI schema locations hints
+* Fix import from locations hints with namespace mismatch (issue #324)
+
+`v2.0.3`_ (2022-08-25)
+======================
+* Add *keep_empty* and *element_hook* options to main `iter_decode()` method
+* Fix default namespace mapping in `BadgerFishConverter`
+* Fix type restriction check if restricted particle has `maxOccurs==0` (issue #323)
+
+`v2.0.2`_ (2022-08-12)
+======================
+* Fix XSD 1.1 assertions effective scope
+* Add support for Python 3.11
+
+`v2.0.1`_ (2022-07-21)
+======================
+* Remove warnings during the build of the package using package_data specs in setup.py
+* Fix decoding with `process_namespaces=False` and xsi:type in XML instance
+* Refactor `DataElement.get()`, restore `DataElement.set()` (issue #314)
+* Add *map_attribute_names* argument to `DataElementConverter`
+
+`v2.0.0`_ (2022-07-18)
+======================
+* Refactor XPath interface for the full XPath node implementation of elementpath v3.0
+* Fix BadgerFishConverter with mixed content (issue #315)
+* Improve `get()` and `set()` of DataElement (issue #314)
+
+`v1.11.3`_ (2022-06-24)
+=======================
+* Fix invalid element not detected with empty particle (issue #306)
+* Fix Sphinx warnings (issue #305)
+
+`v1.11.2`_ (2022-06-11)
+=======================
+* Fix 'replace_existing' argument usage in `XsdElement.get_binding` method (issue #300)
+* Add Russian full translation (from PR #303 and #304)
+
+`v1.11.1`_ (2022-05-22)
+=======================
+* Protect converter calls in iter_decode()/iter_encode()
+* Extend XSD type matching for code generators (fallback to schema types with a local name)
+
+`v1.11.0`_ (2022-05-14)
+=======================
+* Add localization for validation related error messages
+* Add Italian translation
+* Add Russian partial translation (from PR #293)
+
+`v1.10.0`_ (2022-03-07)
+=======================
 * Add 'nonlocal' option to *defuse* argument of `XMLResource` (also for schema classes)
 * Add 'none' option to *allow* argument of `XMLResource`
 * Fix too strict parsing on XSD annotations (issue #287)
@@ -518,3 +710,38 @@ v0.9.6 (2017-05-05)
 .. _v1.9.1: https://github.com/brunato/xmlschema/compare/v1.9.0...v1.9.1
 .. _v1.9.2: https://github.com/brunato/xmlschema/compare/v1.9.1...v1.9.2
 .. _v1.10.0: https://github.com/brunato/xmlschema/compare/v1.9.2...v1.10.0
+.. _v1.11.0: https://github.com/brunato/xmlschema/compare/v1.10.0...v1.11.0
+.. _v1.11.1: https://github.com/brunato/xmlschema/compare/v1.11.0...v1.11.1
+.. _v1.11.2: https://github.com/brunato/xmlschema/compare/v1.11.1...v1.11.2
+.. _v1.11.3: https://github.com/brunato/xmlschema/compare/v1.11.2...v1.11.3
+.. _v2.0.0: https://github.com/brunato/xmlschema/compare/v1.11.3...v2.0.0
+.. _v2.0.1: https://github.com/brunato/xmlschema/compare/v2.0.0...v2.0.1
+.. _v2.0.2: https://github.com/brunato/xmlschema/compare/v2.0.1...v2.0.2
+.. _v2.0.3: https://github.com/brunato/xmlschema/compare/v2.0.2...v2.0.3
+.. _v2.0.4: https://github.com/brunato/xmlschema/compare/v2.0.3...v2.0.4
+.. _v2.1.0: https://github.com/brunato/xmlschema/compare/v2.0.4...v2.1.0
+.. _v2.1.1: https://github.com/brunato/xmlschema/compare/v2.1.0...v2.1.1
+.. _v2.2.0: https://github.com/brunato/xmlschema/compare/v2.1.1...v2.2.0
+.. _v2.2.1: https://github.com/brunato/xmlschema/compare/v2.2.0...v2.2.1
+.. _v2.2.2: https://github.com/brunato/xmlschema/compare/v2.2.1...v2.2.2
+.. _v2.2.3: https://github.com/brunato/xmlschema/compare/v2.2.2...v2.2.3
+.. _v2.3.0: https://github.com/brunato/xmlschema/compare/v2.2.3...v2.3.0
+.. _v2.3.1: https://github.com/brunato/xmlschema/compare/v2.3.0...v2.3.1
+.. _v2.4.0: https://github.com/brunato/xmlschema/compare/v2.3.1...v2.4.0
+.. _v2.5.0: https://github.com/brunato/xmlschema/compare/v2.4.0...v2.5.0
+.. _v2.5.1: https://github.com/brunato/xmlschema/compare/v2.5.0...v2.5.1
+.. _v3.0.0: https://github.com/brunato/xmlschema/compare/v2.5.1...v3.0.0
+.. _v3.0.1: https://github.com/brunato/xmlschema/compare/v3.0.0...v3.0.1
+.. _v3.0.2: https://github.com/brunato/xmlschema/compare/v3.0.1...v3.0.2
+.. _v3.1.0: https://github.com/brunato/xmlschema/compare/v3.0.2...v3.1.0
+.. _v3.2.0: https://github.com/brunato/xmlschema/compare/v3.1.0...v3.2.0
+.. _v3.2.1: https://github.com/brunato/xmlschema/compare/v3.2.0...v3.2.1
+.. _v3.3.0: https://github.com/brunato/xmlschema/compare/v3.2.1...v3.3.0
+.. _v3.3.1: https://github.com/brunato/xmlschema/compare/v3.3.0...v3.3.1
+.. _v3.3.2: https://github.com/brunato/xmlschema/compare/v3.3.1...v3.3.2
+.. _v3.4.0: https://github.com/brunato/xmlschema/compare/v3.3.2...v3.4.0
+.. _v3.4.1: https://github.com/brunato/xmlschema/compare/v3.4.0...v3.4.1
+.. _v3.4.2: https://github.com/brunato/xmlschema/compare/v3.4.1...v3.4.2
+.. _v3.4.3: https://github.com/brunato/xmlschema/compare/v3.4.2...v3.4.3
+.. _v3.4.4: https://github.com/brunato/xmlschema/compare/v3.4.3...v3.4.4
+.. _v3.4.5: https://github.com/brunato/xmlschema/compare/v3.4.4...v3.4.5

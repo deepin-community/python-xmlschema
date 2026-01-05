@@ -94,8 +94,8 @@ build after the loading of all schema resources. For example:
     >>> _ = schema.include_schema('tests/test_cases/examples/vehicles/bikes.xsd')
     >>> schema.build()
 
-Another option, available from release v1.6.1, is to provide a list of schema sources,
-particurlaly useful when sources have no locations associated:
+Another option, available since release v1.6.1, is to provide a list of schema sources,
+particularly useful when sources have no locations associated:
 
 .. doctest::
 
@@ -105,7 +105,7 @@ particurlaly useful when sources have no locations associated:
     ...            open('tests/test_cases/examples/vehicles/types.xsd')]
     >>> schema = xmlschema.XMLSchema(sources)
 
-or similarly to the previous example one can use the method :meth:`add_schema()`:
+or similarly to the previous example one can use the method :meth:`xmlschema.XMLSchemaBase.add_schema`:
 
 .. doctest::
 
@@ -118,10 +118,66 @@ or similarly to the previous example one can use the method :meth:`add_schema()`
 
 
 .. note::
-    Anyway the advice is to build intermediate XSD schemas intead for loading
+    Anyway, the advice is to build intermediate XSD schemas instead for loading
     all the schemas needed in a standard way, because XSD mechanisms of imports,
-    includes, redefines and overrides are usually supported when you submit your
+    includes, redefines, and overrides are usually supported when you submit your
     schemas to other XSD validators.
+
+
+Creating a local copy of a remote XSD schema for offline use
+------------------------------------------------------------
+
+Sometimes, it is advantageous to validate XML files using an XSD schema located
+at a remote location while also having the option to store the same schema
+locally for offline use.
+
+The first option is to build a schema and then export the XSD sources to a local
+directory:
+
+.. code-block:: py
+
+    import xmlschema
+    schema = xmlschema.XMLSchema("https://www.omg.org/spec/ReqIF/20110401/reqif.xsd")
+    schema.export(target='my_schemas', save_remote=True)
+    schema = xmlschema.XMLSchema("my_schemas/reqif.xsd")  # works without internet
+
+With these commands, a folder ``my_schemas`` is created and contains the
+XSD files that can be used without access to the internet.
+
+The resulting XSD files are identical to their remote source files, with the
+only difference being that xmlschema transforms the remote URLs into local
+URLs. The ``export`` command bundles a set of a target XSD file and all its
+dependencies by changing the ``schemaLocation`` attributes into
+``xs:import/xs:include`` statements as follows:
+
+.. code-block:: xml
+
+    <xsd:import namespace="http://www.w3.org/1999/xhtml" schemaLocation="http://www.omg.org/spec/ReqIF/20110402/driver.xsd"/>
+
+becomes
+
+.. code-block:: xml
+
+    <xsd:import namespace="http://www.w3.org/1999/xhtml" schemaLocation="my_schemas/www.omg.org/spec/ReqIF/20110402/driver.xsd"/>
+
+The alternative option is to download the XSD resources directly:
+
+.. code-block:: py
+
+    from xmlschema import download_schemas
+    download_schemas("https://www.omg.org/spec/ReqIF/20110401/reqif.xsd", target='my_schemas')
+
+For default the original XSD schemas are not changed and a location map is returned. This map
+is also written to a LOCATION_MAP dictionary in the target directory as the module `__init__.py`,
+so can be used after as *uri_mapper* argument for building the schema instance.
+
+.. note::
+
+    Since release v2.5.0 the ``schemaLocation`` attributes are rewritten with
+    local paths that don't start with the target directory path, in order to be
+    reusable from any working directory. Furthermore for default the residual
+    redundant imports from different location hints, are cleaned stripping
+    ``schemaLocation`` attributes from them.
 
 
 Validation
@@ -129,7 +185,7 @@ Validation
 
 A schema instance has methods to validate an XML document against the schema.
 
-The first method is :meth:`XMLSchema.is_valid`, that returns ``True``
+The first method is :meth:`xmlschema.XMLSchemaBase.is_valid`, that returns ``True``
 if the XML argument is validated by the schema loaded in the instance,
 and returns ``False`` if the document is invalid.
 
@@ -145,8 +201,8 @@ and returns ``False`` if the document is invalid.
     False
 
 An alternative mode for validating an XML document is implemented by the method
-:meth:`XMLSchema.validate`, that raises an error when the XML doesn't conforms
-to the schema:
+:meth:`xmlschema.XMLSchemaBase.validate`, that raises an error when the XML doesn't
+conform to the schema:
 
 .. doctest::
 
@@ -387,9 +443,9 @@ For instance you can use the *Badgerfish* converter for a schema instance:
     >>> xml_document = 'tests/test_cases/examples/vehicles/vehicles.xml'
     >>> xs = xmlschema.XMLSchema(xml_schema, converter=xmlschema.BadgerFishConverter)
     >>> pprint(xs.to_dict(xml_document, dict_class=dict), indent=4)
-    {   '@xmlns': {   'vh': 'http://example.com/vehicles',
-                      'xsi': 'http://www.w3.org/2001/XMLSchema-instance'},
-        'vh:vehicles': {   '@xsi:schemaLocation': 'http://example.com/vehicles '
+    {   'vh:vehicles': {   '@xmlns': {   'vh': 'http://example.com/vehicles',
+                                         'xsi': 'http://www.w3.org/2001/XMLSchema-instance'},
+                           '@xsi:schemaLocation': 'http://example.com/vehicles '
                                                   'vehicles.xsd',
                            'vh:bikes': {   'vh:bike': [   {   '@make': 'Harley-Davidson',
                                                               '@model': 'WL'},
@@ -412,8 +468,112 @@ to the method call:
 See the :ref:`converters` section for more information about converters.
 
 
+Control the decoding of XSD atomic datatypes
+--------------------------------------------
+
+XSD datatypes are decoded to Python basic datatypes. Python strings are used
+for all string-based XSD types and others, like *xs:hexBinary* or *xs:QName*.
+Python integers are used for *xs:integer* and derived types, `bool` for *xs:boolean*
+values and `decimal.Decimal` for *xs:decimal* values.
+
+Currently there are three options for variate the decoding of XSD atomic datatypes:
+
+decimal_type
+    decoding type for *xs:decimal* (is `decimal.Decimal` for default)
+
+datetime_types
+    if set to `True` decodes datetime and duration types to their respective XSD
+    atomic types instead of keeping the XML string value
+
+binary_types
+    if set to `True` decodes *xs:hexBinary* and *xs:base64Binary* types to their
+    respective XSD atomic types instead of keeping the XML string value
+
+
+Filling missing values
+----------------------
+
+Incompatible values are decoded with `None` when the *validation* mode is `'lax'`.
+For these situations there are two options for changing the behavior of the decoder:
+
+filler
+    a callback function to fill undecodable data with a typed value. The
+    callback function must accept one positional argument, that can be an
+    XSD Element or an attribute declaration. If not provided undecodable
+    data is replaced by `None`.
+
+fill_missing
+    if set to True the decoder fills also missing attributes. The filling value
+    is None or a typed value if the *filler* callback is provided.
+
+
+Control the decoding of elements
+--------------------------------
+
+These options concern the decoding of XSD elements:
+
+value_hook
+    a function that will be called with any decoded atomic value and the XSD type
+    used for decoding. The return value will be used instead of the original value.
+
+keep_empty
+    if set to `True` empty elements that are valid are decoded with an empty string
+    value instead of `None`.
+
+element_hook
+    an function that is called with decoded element data before calling the converter
+    decode method. Takes an `ElementData` instance plus optionally the XSD element
+    and the XSD type, and returns a new `ElementData` instance.
+
+
+Control the decoding of wildcards
+---------------------------------
+
+These two options are specific for the content processed with an XSD wildcard:
+
+keep_unknown
+    if set to `True` unknown tags are kept and are decoded with *xs:anyType*.
+    For default unknown tags not decoded by a wildcard are discarded.
+
+process_skipped
+    process XML data that match a wildcard with `processContents=’skip’`.
+
+
+Control the decoding depth
+--------------------------
+
+max_depth
+    maximum level of decoding, for default there is no limit. With lazy resources
+    is automatically set to *source.lazy_depth* for managing lazy decoding.
+    Available also for validation methods.
+
+depth_filler
+    a callback function for replacing data over the *max_depth* level. The callback
+    function must accept one positional argument, that can be an XSD Element. For
+    default deeper data is replaced with `None` values when *max_depth* is provided.
+
+Control the validation
+----------------------
+
+extra_validator
+    an optional function for performing non-standard validations on XML data. The
+    provided function is called for each traversed element, with the XML element as
+    1st argument and the corresponding XSD element as 2nd argument. It can be also a
+    generator function and has to raise/yield `XMLSchemaValidationError` exceptions.
+
+validation_hook
+    an optional function for stopping or changing validation/decoding at element level.
+    The provided function must accept two arguments, the XML element and the matching
+    XSD element. If the value returned by this function is evaluated to false then the
+    validation/decoding process continues without changes, otherwise it's stopped or
+    changed. If the value returned is a validation mode the validation/decoding process
+    continues changing the current validation mode to the returned value, otherwise the
+    element and its content are not processed. For validation only this function can
+    also stop validation suddenly raising a `XMLSchemaStopValidation` exception.
+
+
 Decoding to JSON
-----------------
+================
 
 The data structured created by the decoder can be easily serialized to JSON. But if you data
 include `Decimal` values (for *decimal* XSD built-in type) you cannot convert the data to JSON:
@@ -497,9 +657,9 @@ See the :meth:`xmlschema.to_json` and :meth:`xmlschema.from_json` in the
 XML resources and documents
 ===========================
 
-Schemas and XML instances processing are based on the class :class:`XMLResource`,
+Schemas and XML instances processing are based on the class :class:`xmlschema.XMLResource`,
 that handles the loading and the iteration of XSD/XML data.
-Starting from v1.3.0 :class:`XMLResource` has been empowered with ElementTree-like
+Starting from v1.3.0 :class:`xmlschema.XMLResource` has been empowered with ElementTree-like
 XPath API. From the same release a new class :class:`xmlschema.XmlDocument` is
 available for representing XML resources with a related schema:
 
@@ -512,3 +672,88 @@ available for representing XML resources with a related schema:
 
 This class can be used to derive specialized schema-related classes.
 See :ref:`wsdl11-documents` section for an application example.
+
+
+Meta-schemas and XSD sources
+============================
+
+Schema classes :class:`xmlschema.XMLSchema10` and :class:`xmlschema.XMLSchema11`
+have built-in meta-schema instances, related to the XSD namespace, that can be used
+directly to validate XSD sources without build a new schema:
+
+.. doctest::
+
+    >>> from xmlschema import XMLSchema
+    >>> XMLSchema.meta_schema.validate('tests/test_cases/examples/vehicles/vehicles.xsd')
+    >>> XMLSchema.meta_schema.validate('tests/test_cases/examples/vehicles/invalid.xsd')
+    Traceback (most recent call last):
+    ...
+    ...
+    xmlschema.validators.exceptions.XMLSchemaValidationError: failed validating ...
+
+    Reason: use of attribute 'name' is prohibited
+
+    Schema:
+
+      <xs:restriction xmlns:xs="http://www.w3.org/2001/XMLSchema" base="xs:complexType">
+       <xs:sequence>
+        <xs:element ref="xs:annotation" minOccurs="0" />
+        <xs:group ref="xs:complexTypeModel" />
+       </xs:sequence>
+       <xs:attribute name="name" use="prohibited" />
+       <xs:attribute name="abstract" use="prohibited" />
+       <xs:attribute name="final" use="prohibited" />
+       <xs:attribute name="block" use="prohibited" />
+       <xs:anyAttribute namespace="##other" processContents="lax" />
+      </xs:restriction>
+
+    Instance:
+
+      <xs:complexType xmlns:xs="http://www.w3.org/2001/XMLSchema" name="vehiclesType">
+        <xs:sequence>
+          <xs:element ref="vh:cars" />
+          <xs:element ref="vh:bikes" />
+        </xs:sequence>
+      </xs:complexType>
+
+    Path: /xs:schema/xs:element/xs:complexType
+
+
+Furthermore also decode and encode methods can be applied on XSD files or sources:
+
+.. doctest::
+
+    >>> from xmlschema import XMLSchema
+    >>> obj = XMLSchema.meta_schema.decode('tests/test_cases/examples/vehicles/vehicles.xsd')
+    >>> from pprint import pprint
+    >>> pprint(obj)
+    {'@attributeFormDefault': 'unqualified',
+     '@blockDefault': [],
+     '@elementFormDefault': 'qualified',
+     '@finalDefault': [],
+     '@targetNamespace': 'http://example.com/vehicles',
+     '@xmlns:vh': 'http://example.com/vehicles',
+     '@xmlns:xs': 'http://www.w3.org/2001/XMLSchema',
+     'xs:attribute': {'@name': 'step', '@type': 'xs:positiveInteger'},
+     'xs:element': {'@abstract': False,
+                    '@name': 'vehicles',
+                    '@nillable': False,
+                    'xs:complexType': {'@mixed': False,
+                                       'xs:sequence': {'@maxOccurs': 1,
+                                                       '@minOccurs': 1,
+                                                       'xs:element': [{'@maxOccurs': 1,
+                                                                       '@minOccurs': 1,
+                                                                       '@nillable': False,
+                                                                       '@ref': 'vh:cars'},
+                                                                      {'@maxOccurs': 1,
+                                                                       '@minOccurs': 1,
+                                                                       '@nillable': False,
+                                                                       '@ref': 'vh:bikes'}]}}},
+     'xs:include': [{'@schemaLocation': 'cars.xsd'},
+                    {'@schemaLocation': 'bikes.xsd'}]}
+
+.. note::
+    Building a new schema for XSD namespace could be not trivial because other schemas are
+    required for base namespaces (e.g. XML namespace 'http://www.w3.org/XML/1998/namespace').
+    This is particularly true for XSD 1.1 because the XSD meta-schema lacks of built-in
+    list types definitions, so a patch schema is required.

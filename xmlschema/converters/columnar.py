@@ -11,9 +11,9 @@ from collections.abc import MutableMapping, MutableSequence
 from typing import TYPE_CHECKING, Any, Optional, List, Dict, Type, Tuple
 
 from ..exceptions import XMLSchemaTypeError, XMLSchemaValueError
-from ..etree import ElementData
 from ..aliases import NamespacesType, BaseXsdType
-from .default import XMLSchemaConverter
+from ..resources import XMLResource
+from .default import ElementData, XMLSchemaConverter
 
 if TYPE_CHECKING:
     from ..validators import XsdElement
@@ -37,22 +37,30 @@ class ColumnarConverter(XMLSchemaConverter):
                  attr_prefix: Optional[str] = '',
                  **kwargs: Any) -> None:
         kwargs.update(text_key=None, cdata_prefix=None)
-        super(ColumnarConverter, self).__init__(namespaces, dict_class, list_class,
-                                                attr_prefix=attr_prefix, **kwargs)
+        super().__init__(namespaces, dict_class, list_class,
+                         attr_prefix=attr_prefix, **kwargs)
+
+    @property
+    def xmlns_processing_default(self) -> str:
+        return 'stacked' if isinstance(self.source, XMLResource) else 'none'
 
     @property
     def lossy(self) -> bool:
         return True  # Loss cdata parts
 
+    @property
+    def loss_xmlns(self) -> bool:
+        return True
+
     def __setattr__(self, name: str, value: Any) -> None:
         if name != 'attr_prefix':
-            super(ColumnarConverter, self).__setattr__(name, value)
+            super().__setattr__(name, value)
         elif not isinstance(value, str):
-            msg = '{} must be a str, not {}'
-            raise XMLSchemaTypeError(msg.format(name, type(value).__name__))
-        elif value not in {'', '_', '__'}:
-            msg = '{} can be the empty string or a single/double underscore'
-            raise XMLSchemaValueError(msg.format(name))
+            msg = "%(name)r must be a <class 'str'> instance, not %(type)r"
+            raise XMLSchemaTypeError(msg % {'name': name, 'type': type(value)})
+        elif value not in ('', '_', '__'):
+            msg = '%r can be the empty string or a single/double underscore'
+            raise XMLSchemaValueError(msg % name)
         else:
             super(XMLSchemaConverter, self).__setattr__(name, value)
 
@@ -71,7 +79,7 @@ class ColumnarConverter(XMLSchemaConverter):
             result_dict = self.dict()
 
         if xsd_type.simple_type is not None:
-            result_dict[xsd_element.local_name] = data.text or None
+            result_dict[xsd_element.local_name] = data.text
 
         if data.content:
             for name, value, xsd_child in self.map_content(data.content):
@@ -128,11 +136,11 @@ class ColumnarConverter(XMLSchemaConverter):
 
         if not isinstance(obj, MutableMapping):
             if xsd_element.type.simple_type is not None:
-                return ElementData(xsd_element.name, obj, None, {})
+                return ElementData(xsd_element.name, obj, None, {}, None)
             elif xsd_element.type.mixed and not isinstance(obj, MutableSequence):
-                return ElementData(xsd_element.name, obj, None, {})
+                return ElementData(xsd_element.name, obj, None, {}, None)
             else:
-                return ElementData(xsd_element.name, None, obj, {})
+                return ElementData(xsd_element.name, None, obj, {}, None)
 
         text = None
         content: List[Tuple[Optional[str], MutableSequence[Any]]] = []
@@ -152,21 +160,14 @@ class ColumnarConverter(XMLSchemaConverter):
                 ns_name = self.unmap_qname(name)
                 content.extend((ns_name, item) for item in value)
             else:
-                xsd_group = xsd_element.type.model_group
-                if xsd_group is None:
-                    xsd_group = xsd_element.any_type.model_group
-                    assert xsd_group is not None
-
                 ns_name = self.unmap_qname(name)
-                for xsd_child in xsd_group.iter_elements():
-                    matched_element = xsd_child.match(ns_name, resolve=True)
-                    if matched_element is not None:
-                        if matched_element.type and matched_element.type.is_list():
-                            content.append((xsd_child.name, value))
-                        else:
-                            content.extend((xsd_child.name, item) for item in value)
-                        break
+                xsd_child = xsd_element.match_child(ns_name)
+                if xsd_child is not None:
+                    if xsd_child.type and xsd_child.type.is_list():
+                        content.append((ns_name, value))
+                    else:
+                        content.extend((ns_name, item) for item in value)
                 else:
-                    content.append((ns_name, value))
+                    content.extend((ns_name, item) for item in value)
 
-        return ElementData(xsd_element.name, text, content, attributes)
+        return ElementData(xsd_element.name, text, content, attributes, None)

@@ -9,8 +9,9 @@
 #
 import re
 from typing import Any, Dict, List, Type, Union, Iterator
+from xml.etree.ElementTree import Element
+
 from ..helpers import get_namespace, get_qname
-from ..etree import etree_element
 
 _REGEX_SPACES = re.compile(r'\s+')
 
@@ -26,16 +27,17 @@ def iter_nested_items(items: Union[Dict[Any, Any], List[Any]],
         for item in items:
             yield from iter_nested_items(item, dict_class, list_class)
     elif isinstance(items, dict):
-        raise TypeError("%r: is a dict() instead of %r." % (items, dict_class))
+        raise TypeError(f"{items!r}: is a dict() instead of {dict_class!r}.")
     elif isinstance(items, list):
-        raise TypeError("%r: is a list() instead of %r." % (items, list_class))
+        raise TypeError(f"{items!r}: is a list() instead of {list_class!r}.")
     else:
         yield items
 
 
-def etree_elements_assert_equal(elem: etree_element, other: etree_element,
+def etree_elements_assert_equal(elem: Element, other: Element,
                                 strict: bool = True, skip_comments: bool = True,
-                                unordered: bool = False) -> None:
+                                unordered: bool = False,
+                                check_nsmap: bool = False) -> None:
     """
     Tests the equality of two XML Element trees.
 
@@ -44,9 +46,10 @@ def etree_elements_assert_equal(elem: etree_element, other: etree_element,
     :param strict: asserts strictly equality. `True` for default.
     :param skip_comments: skip comments from comparison.
     :param unordered: children may have different order.
+    :param check_nsmap: if to check namespace maps.
     :raise: an AssertionError containing information about first difference encountered.
     """
-    children: Union[etree_element, List[etree_element]]
+    children: Union[Element, List[Element]]
 
     if unordered:
         children = sorted(elem, key=lambda x: '' if callable(x.tag) else x.tag)
@@ -62,21 +65,19 @@ def etree_elements_assert_equal(elem: etree_element, other: etree_element,
         if skip_comments and callable(e1.tag):
             continue
 
-        try:
-            while True:
-                e2 = next(other_children)
-                if not skip_comments or not callable(e2.tag):
-                    break
-        except StopIteration:
-            raise AssertionError("Node %r has more children than %r" % (elem, other))
+        for e2 in other_children:
+            if not skip_comments or not callable(e2.tag):
+                break
+        else:
+            raise AssertionError(f"Node {elem!r} has more children than {other!r}")
 
         if strict or e1 is elem:
             if e1.tag != e2.tag:
-                raise AssertionError("%r != %r: tags differ" % (e1, e2))
+                raise AssertionError(f"{e1!r} != {e2!r}: tags differ")
         else:
             namespace = get_namespace(e1.tag) or namespace
             if get_qname(namespace, e1.tag) != get_qname(namespace, e2.tag):
-                raise AssertionError("%r != %r: tags differ." % (e1, e2))
+                raise AssertionError(f"{e1!r} != {e2!r}: tags differ")
 
         # Attributes
         if e1.attrib != e2.attrib:
@@ -97,6 +98,19 @@ def etree_elements_assert_equal(elem: etree_element, other: etree_element,
                             msg = "%r != %r: attribute %r values differ: %r != %r"
                             raise AssertionError(msg % (e1, e2, k, a1, a2)) from None
 
+        # Namespace maps
+        if check_nsmap:
+            nsmap1 = getattr(e1, 'nsmap', None)
+            nsmap2 = getattr(e2, 'nsmap', None)
+            if nsmap1 != nsmap2:
+                if strict or (nsmap1 or None) != (nsmap2 or None):
+                    if (nsmap1 is None) ^ (nsmap2 is None):
+                        msg = "{!r} != {!r}: different ElementTree implementations"
+                        raise AssertionError(msg.format(e1, e2))
+                    else:
+                        msg = "{!r} != {!r}: nsmaps differ: {!r} != {!r}"
+                        raise AssertionError(msg.format(e1, e2, nsmap1, nsmap2))
+
         # Number of children
         if skip_comments:
             nc1 = len([c for c in e1 if not callable(c.tag)])
@@ -110,7 +124,7 @@ def etree_elements_assert_equal(elem: etree_element, other: etree_element,
 
         # Text
         if e1.text != e2.text:
-            message = "%r != %r: texts differ: %r != %r" % (e1, e2, e1.text, e2.text)
+            message = f"{e1!r} != {e2!r}: texts differ: {e1.text!r} != {e2.text!r}"
             if strict:
                 raise AssertionError(message)
             elif e1.text is None:
@@ -147,7 +161,7 @@ def etree_elements_assert_equal(elem: etree_element, other: etree_element,
 
         # Tail
         if e1.tail != e2.tail:
-            message = "%r != %r: tails differ: %r != %r" % (e1, e2, e1.tail, e2.tail)
+            message = f"{e1!r} != {e2!r}: tails differ: {e1.tail!r} != {e2.tail!r}"
             if strict:
                 raise AssertionError(message)
             elif e1.tail is None:
@@ -166,4 +180,4 @@ def etree_elements_assert_equal(elem: etree_element, other: etree_element,
     except StopIteration:
         pass
     else:
-        raise AssertionError("Node %r has lesser children than %r." % (elem, other))
+        raise AssertionError(f"Node {elem!r} has lesser children than {other!r}.")
